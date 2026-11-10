@@ -4,18 +4,62 @@ import { localTZ } from '../lib/format.js'
 import { registerCustom } from '../lib/exercises.js'
 import { DEMO, DEMO_SEEDED } from '../lib/demo.js'
 import { MOBILE, nativeLoad, nativeSave, syncReminder } from '../lib/mobile.js'
+import { detectLang } from '../lib/i18n.js'
 
 const KEY = 'gym_state_v1'
 export const DEF = {
-  unit: 'kg', restSec: 90, sound: true, keepAwake: true, lang: 'en',
-  theme: 'dark', accent: 'lime', body: 'male', targetW: null,
-  bodyweight: [], routines: [], week: {}, dayPlan: {},
-  exWeights: {}, workouts: [], active: null, customEx: [], gifSize: 'full',
+  // glass: how see-through bars and sheets are — 'frosted' (default, easier to read) | 'clear'
+  glass: 'frosted',
+  unit: 'kg', restSec: 90, sound: true, keepAwake: true, lang: detectLang(),
+  theme: 'dark', accent: 'lime', body: 'male', targetW: null, targetWU: null,
+  bodyweight: [], measurements: [], routines: [], week: {}, dayPlan: {},
+  exWeights: {}, exNotes: {}, workouts: [], active: null, customEx: [], gifSize: 'full',
   // effort: which per-set effort scale is logged — 'none' | 'rir' | 'rpe'. null, not 'none', so
   // that a profile which never chose (loaded state is overlaid on DEF, on every path: local,
   // server pull, backup import) still falls back to the `showRir` boolean this replaced and
   // keeps the column it had. See effortOf.
-  reminder: { on: false, time: '08:00', tz: null }, effort: null
+  reminder: { on: false, time: '08:00', tz: null }, effort: null,
+  // Who is training, for the AI coach (lib/coach-profile.js). null until the onboarding
+  // wizard runs — read it through coachProfileOf, which overlays the defaults, rather
+  // than reaching in here: a profile written by an older build is missing keys.
+  coachProfile: null,
+  // The plan the coach replaced, kept for a week so an AI-generated week is reversible.
+  coachUndo: null,
+  // Plan changes the trainer made (lib/trainer.js), kept so each can be undone exactly:
+  // { at, actions: [{ type, routineId, exId, from, to, ... }] }.
+  trainerUndo: null,
+  // The flexible week (lib/flex.js): { on, perWeek } — a number of sessions to aim for instead of
+  // fixed weekdays, for shift work. null = off. Read it through flexOf.
+  flex: null,
+  // When the program was last reviewed (YYYY-MM-DD), so the trainer's re-plan suggestion
+  // (lib/trainer-replan.js) comes round once a month and not on every visit.
+  replanAt: null,
+  // The week of meals (lib/mealplan.js): references to saved meals, never copies.
+  mealPlan: null,
+  // Food log (lib/nutrition.js). meals are what was eaten, myMeals are saved templates
+  // ("my breakfast") and myFoods are the user's own entries — the same relationship
+  // customEx has with the exercise catalogue.
+  meals: [], myMeals: [], myFoods: [],
+  // Portions the user weighed once, per food (lib/portions.js): "1 st = 61 g" for their
+  // eggs, their bread. What makes logging possible without a scale on the counter.
+  portions: [],
+  // Personal nutrition objective and optional daily targets. Demographics stay in the
+  // shared coach profile; these values are always typed and confirmed by the user.
+  nutritionGoals: null,
+  // Diabetes mode (lib/diabetes.js). null until someone turns it on in Settings — read it
+  // through healthOf, which overlays the defaults, rather than reaching in here.
+  health: null,
+  // Glucose readings, always stored in mmol/L whatever the profile displays, and insulin
+  // doses in units. Both carry src: 'import' when they came out of a file, which is what
+  // makes an import undoable without touching what was typed by hand.
+  glucose: [], doses: [],
+  // One step count per day, from a watch export (lib/import-csv.js). Steps by the hour are
+  // a different feature: a quarter of a million records to render a daily average would be
+  // a poor trade, so only the day's figure is kept, with the source it was reconciled from.
+  steps: [],
+  // One asleep-minutes figure per night, from a watch export (lib/import-csv.js). A night is
+  // attributed to the evening it began, not the morning it ended.
+  sleep: []
 }
 const clone = o => JSON.parse(JSON.stringify(o))
 
@@ -27,7 +71,11 @@ function loadState() {
   return clone(DEF)
 }
 
-const hasData = st => !!((st.workouts || []).length || (st.routines || []).length || (st.bodyweight || []).length)
+const hasData = st => !!(st && (
+  ['workouts', 'routines', 'bodyweight', 'measurements', 'customEx', 'meals', 'myMeals', 'myFoods', 'portions', 'glucose', 'doses', 'steps', 'sleep']
+    .some(key => (st[key] || []).length) ||
+  st.coachProfile || st.health || st.nutritionGoals || st.targetW != null || st.active
+))
 
 export const useStore = create((set, get) => {
   let pushTm = null

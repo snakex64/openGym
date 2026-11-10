@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store/useStore.js'
 import { EXIDX } from '../lib/exercises.js'
-import { lastBW, streakWeeks, setLabel, modeOf, effortOf } from '../lib/history.js'
-import { fmtNum, fmtDate, fmtVol, todayISO, weekKey } from '../lib/format.js'
+import { lastBW, streakWeeks, setLabel, modeOf, effortOf, weightIn } from '../lib/history.js'
+import { fmtNum, fmtDate, fmtVol, fmtDur, todayISO, weekKey } from '../lib/format.js'
 import { t } from '../lib/i18n.js'
 import { bwSheet, goalSheet, calendarSheet, workoutDetailSheet, WorkoutRow, bwDeltaColor } from '../sheets.jsx'
 import LineChart from '../components/LineChart.jsx'
@@ -12,14 +12,128 @@ import Icon from '../components/Icon.jsx'
 import BodyMap, { BodyMapLegend } from '../components/BodyMap.jsx'
 import { loadOfWorkouts, rankOf, MUSCLE_NAME } from '../lib/muscles.js'
 import { e1rmSeries, best1RM } from '../lib/onerm.js'
+import { formatKm, cardioSet } from '../lib/cardio.js'
+import { cardioSummary, cardioWeeks, hasCardio, paceLabel } from '../lib/cardio-stats.js'
+import { hasSteps, stepSummary, stepWeeks } from '../lib/steps.js'
+import { hasSleep, sleepSummary, sleepWeeks } from '../lib/sleep.js'
 import {
   hasEffort, displayScale, scaleName, toScale, avgRir, effortSummary, effortWeeks,
   effortHistogram, isHardSet, HARD_RIR
 } from '../lib/effort.js'
-import { Button, Segmented, SelectRow } from '../components/ui.jsx'
+import { Button, NumberField, Segmented, SelectRow } from '../components/ui.jsx'
+import { MEASUREMENT_FIELDS, measurementSeries, saveMeasurement } from '../lib/measurements.js'
 
 // Which muscles the training in a window actually hit — and, the point of the card,
 // which ones it keeps missing. Shading is relative within the window (lib/muscles.js).
+// Cardio, in the units it was measured in. It is absent from the volume figure by design —
+// see cardio-stats.js — so without this card a week of running reads as a week off.
+function CardioCard({ S }) {
+  const [win, setWin] = useState(90)
+  const sum = cardioSummary(S, win)
+  const weeks = cardioWeeks(S, win)
+  const pts = weeks.map(w => ({
+    t: w.t, y: w.minutes,
+    note: [w.km > 0 && `${formatKm(w.km)} km`, paceLabel(w.pace), t('{0} sessions', w.sessions)]
+      .filter(Boolean).join(' · ')
+  }))
+
+  return <div className="card">
+    <h2>{t('Cardio')} <span className="dim" style={{ textTransform: 'none', letterSpacing: 0 }}>· {t('time and distance')}</span></h2>
+    <Segmented className="seg-range" value={win} onChange={setWin}
+      options={[{ value: 30, label: '30d' }, { value: 90, label: '90d' }, { value: 365, label: '1Y' }, { value: 0, label: t('All') }]} />
+    {sum.sessions === 0 ? <div className="muted small">{t('No cardio in this period.')}</div> : <>
+      <div className="row between" style={{ alignItems: 'flex-end', gap: 12 }}>
+        <div>
+          <div className="stat-v">{fmtNum(sum.minutes)} min</div>
+          <div className="small dim">{t('over {0} sessions', sum.sessions)}</div>
+        </div>
+        {sum.km > 0 && <div style={{ textAlign: 'right' }}>
+          <div className="stat-v">{sum.anyDistanceDerived ? '≈' : ''}{formatKm(sum.km)} km</div>
+          <div className="small dim">{paceLabel(sum.pace) || t('distance')}</div>
+        </div>}
+      </div>
+      <div className="small dim" style={{ marginTop: 8 }}>
+        {[
+          t('Longest: {0} min', fmtNum(sum.longestMinutes)),
+          sum.longestKm > 0 && t('{0} km', formatKm(sum.longestKm)),
+          sum.hr && t('{0} bpm across {1} min', sum.hr, fmtNum(sum.hrMinutes))
+        ].filter(Boolean).join(' · ')}
+      </div>
+      {sum.anyDistanceDerived && <div className="small dim" style={{ marginTop: 4 }}>
+        {t('Distances marked ≈ were calculated from a logged speed rather than measured.')}
+      </div>}
+      {pts.length > 1 && <>
+        <h4 className="sec" style={{ marginTop: 12 }}>{t('Week by week')}</h4>
+        <div className="chart"><LineChart points={pts} h={140} unit="min" color="var(--blue)" /></div>
+      </>}
+    </>}
+  </div>
+}
+
+// Steps come from a watch export, so the card exists only once one has been imported.
+function StepsCard({ S }) {
+  const [win, setWin] = useState(90)
+  const sum = stepSummary(S, win)
+  const weeks = stepWeeks(S, win)
+  const pts = weeks.map(w => ({ t: w.t, y: w.avg, note: t('{0} days recorded', w.days) }))
+
+  return <div className="card">
+    <h2>{t('Steps')} <span className="dim" style={{ textTransform: 'none', letterSpacing: 0 }}>· {t('per day')}</span></h2>
+    <Segmented className="seg-range" value={win} onChange={setWin}
+      options={[{ value: 30, label: '30d' }, { value: 90, label: '90d' }, { value: 365, label: '1Y' }, { value: 0, label: t('All') }]} />
+    {sum.days === 0 ? <div className="muted small">{t('No steps in this period.')}</div> : <>
+      <div className="row between" style={{ alignItems: 'flex-end', gap: 12 }}>
+        <div>
+          <div className="stat-v">{fmtNum(sum.avg)}</div>
+          <div className="small dim">{t('average over {0} days recorded', sum.days)}</div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div className="stat-v">{fmtNum(sum.best)}</div>
+          <div className="small dim">{t('best day · {0}', fmtDate(sum.bestDay, true))}</div>
+        </div>
+      </div>
+      {/* Days without a record are absent rather than zero — a watch on the charger is not
+          a day spent sitting still, and averaging it in would describe the device. */}
+      {pts.length > 1 && <>
+        <h4 className="sec" style={{ marginTop: 12 }}>{t('Week by week')}</h4>
+        <div className="chart"><LineChart points={pts} h={140} unit={t('steps/day')} color="var(--purple)" /></div>
+      </>}
+    </>}
+  </div>
+}
+
+// Sleep comes from a watch export, so the card exists only once one has been imported.
+function SleepCard({ S }) {
+  const [win, setWin] = useState(90)
+  const sum = sleepSummary(S, win)
+  const weeks = sleepWeeks(S, win)
+  const pts = weeks.map(w => ({ t: w.t, y: Math.round(w.avg / 60 * 10) / 10, note: t('{0} nights recorded', w.days) }))
+
+  return <div className="card">
+    <h2>{t('Sleep')} <span className="dim" style={{ textTransform: 'none', letterSpacing: 0 }}>· {t('per night')}</span></h2>
+    <Segmented className="seg-range" value={win} onChange={setWin}
+      options={[{ value: 30, label: '30d' }, { value: 90, label: '90d' }, { value: 365, label: '1Y' }, { value: 0, label: t('All') }]} />
+    {sum.days === 0 ? <div className="muted small">{t('No sleep data in this period.')}</div> : <>
+      <div className="row between" style={{ alignItems: 'flex-end', gap: 12 }}>
+        <div>
+          <div className="stat-v">{fmtDur(sum.avg * 60000)}</div>
+          <div className="small dim">{t('average over {0} nights recorded', sum.days)}</div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div className="stat-v">{fmtDur(sum.best * 60000)}</div>
+          <div className="small dim">{t('best night · {0}', fmtDate(sum.bestDay, true))}</div>
+        </div>
+      </div>
+      {/* Nights without a record are absent rather than zero — a watch off the wrist is not
+          a night without sleep, and averaging it in would describe the device. */}
+      {pts.length > 1 && <>
+        <h4 className="sec" style={{ marginTop: 12 }}>{t('Week by week')}</h4>
+        <div className="chart"><LineChart points={pts} h={140} unit={t('h/night')} color="var(--teal)" /></div>
+      </>}
+    </>}
+  </div>
+}
+
 function MuscleBalance({ S }) {
   const [win, setWin] = useState(7)
   const [hard, setHard] = useState(false)
@@ -44,7 +158,7 @@ function MuscleBalance({ S }) {
   return <div className="card">
     <div className="row between" style={{ marginBottom: 8 }}>
       <h2 style={{ margin: 0 }}>{t('Muscle balance')} <span className="dim" style={{ textTransform: 'none', letterSpacing: 0 }}>· {on ? t('by hard sets') : t('by sets worked')}</span></h2>
-      {rated && <Button size="sm" icon="flame" style={on ? { color: 'var(--yellow)' } : undefined}
+      {rated && <Button size="sm" icon="flame" style={on ? { color: 'var(--yellow-t)' } : undefined}
         onClick={() => { setHard(h => !h); setSel(null) }}>{on ? t('Hard') : t('All')}</Button>}
     </div>
     <Segmented className="seg-range" value={win} onChange={v => { setWin(v); setSel(null) }}
@@ -104,12 +218,12 @@ function EffortCard({ S }) {
           <div className="small dim">{t('average effort')}</div>
         </div>
         <div style={{ textAlign: 'right' }}>
-          <div className="stat-v" style={{ color: 'var(--yellow)' }}>{sum.hardPct == null ? '—' : Math.round(sum.hardPct * 100) + '%'}</div>
+          <div className="stat-v" style={{ color: 'var(--yellow-t)' }}>{sum.hardPct == null ? '—' : Math.round(sum.hardPct * 100) + '%'}</div>
           <div className="small dim">{t('at {0} {1} or harder', hd, fmtNum(toScale(kind, HARD_RIR)))}</div>
         </div>
       </div>
       <div className="small dim" style={{ marginTop: 8 }}>{t('{0} of {1} finished sets rated', sum.rated, sum.done)}</div>
-      {effortOf(S) === 'none' && <div className="small" style={{ color: 'var(--yellow)', marginTop: 4 }}>
+      {effortOf(S) === 'none' && <div className="small" style={{ color: 'var(--yellow-t)', marginTop: 4 }}>
         {t('Effort per set is switched off — turn it on in Settings to keep rating.')}
       </div>}
       {pts.length > 1 && <>
@@ -129,6 +243,27 @@ function EffortCard({ S }) {
   </div>
 }
 
+function MeasurementsCard({ S }) {
+  const update = useStore(s => s.update)
+  const [field, setField] = useState('waist')
+  const [draft, setDraft] = useState({})
+  const points = measurementSeries(S.measurements, field, 365)
+  const labels = { waist: t('Waist'), chest: t('Chest'), arms: t('Arms'), thighs: t('Thighs') }
+  const save = () => {
+    update(state => { state.measurements = saveMeasurement(state.measurements, { ...draft, d: todayISO(), u: 'cm' }) })
+    setDraft({})
+  }
+  return <div className="card">
+    <div className="row between" style={{ marginBottom: 8 }}><h2 style={{ margin: 0 }}>{t('Body measurements')}</h2><span className="tag">cm</span></div>
+    <div className="cols" style={{ gap: 8 }}>
+      {MEASUREMENT_FIELDS.map(key => <label key={key} className="small dim">{labels[key]}<NumberField decimal nullable value={draft[key] ?? ''} onChange={value => setDraft(current => ({ ...current, [key]: value }))} /></label>)}
+    </div>
+    <Button size="sm" variant="tinted" icon="plus" disabled={!MEASUREMENT_FIELDS.some(key => draft[key] > 0)} onClick={save}>{t('Save today')}</Button>
+    <Segmented className="seg-range" value={field} onChange={setField} options={MEASUREMENT_FIELDS.map(key => ({ value: key, label: labels[key] }))} />
+    {points.length > 1 ? <div className="chart"><LineChart points={points} h={140} unit="cm" color="var(--teal)" /></div> : <div className="muted small">{t('Log two measurements to see a trend.')}</div>}
+  </div>
+}
+
 // Stats = the analytics hub: all charts, progress and history live here.
 export default function Stats() {
   const nav = useNavigate()
@@ -138,13 +273,18 @@ export default function Stats() {
   const [exMetric, setExMetric] = useState('top')
   const now = Date.now()
   const anyEffort = hasEffort(S)
+  const anyCardio = hasCardio(S)
+  const anySteps = hasSteps(S)
+  const anySleep = hasSleep(S)
   const kind = displayScale(S)
   const hd = scaleName(kind)
 
   const bwPts = S.bodyweight.filter(b => range === 0 || (b.t || new Date(b.d).getTime()) > now - range * 86400000)
-    .map(b => ({ t: b.t || new Date(b.d).getTime(), y: b.w, d: b.d }))
+    .map(b => ({ t: b.t || new Date(b.d).getTime(), y: weightIn(b, S.unit) ?? b.w, d: b.d }))
   const bw30 = S.bodyweight.filter(b => (b.t || new Date(b.d).getTime()) > now - 30 * 86400000)
-  const bwDelta30 = bw30.length > 1 ? bw30[bw30.length - 1].w - bw30[0].w : null
+    .map(b => weightIn(b, S.unit) ?? b.w)
+  const bwDelta30 = bw30.length > 1 ? bw30[bw30.length - 1] - bw30[0] : null
+  const currentBW = weightIn(lastBW(S), S.unit) ?? lastBW(S)?.w ?? 0
   const monthW = S.workouts.filter(w => w.d.slice(0, 7) === todayISO().slice(0, 7)).length
 
   const exHist = [...new Set(S.workouts.flatMap(w => w.entries.map(e => e.id)))].filter(id => EXIDX[id]).sort((a, b) => EXIDX[a].n < EXIDX[b].n ? -1 : 1)
@@ -161,7 +301,7 @@ export default function Stats() {
   })() : 'reps'
   const curCardio = curMode === 'cardio'
   const curTimed = curMode === 'time'
-  const metric = s => curCardio ? (s.speed || 0) : curTimed ? (s.sec || 0) : (s.w || 0)
+  const metric = s => curCardio ? (cardioSet(s).speed || 0) : curTimed ? (s.sec || 0) : (s.w || 0)
   const exUnit = curCardio ? 'km/h' : curTimed ? 's' : S.unit
   let exPts = [], exList = [], exBest = 0
   if (curEx) {
@@ -202,7 +342,7 @@ export default function Stats() {
       <div className="tile"><div className="l"><Icon name="dumbbell" />{t('Workouts')}</div><div className="v">{S.workouts.length}</div></div>
       <div className="tile"><div className="l"><Icon name="calendar" />{t('This month')}</div><div className="v">{monthW}</div></div>
       <div className="tile"><div className="l"><Icon name="flame" />{t('Week streak')}</div><div className="v">{streakWeeks(S)}</div></div>
-      <div className="tile"><div className="l"><Icon name="scale" />{t('Weight 30d')}</div><div className="v" style={{ fontSize: 22, color: bwDelta30 === null ? 'inherit' : bwDeltaColor(bwDelta30, (lastBW(S) || {}).w || 0) }}>{bwDelta30 === null ? '—' : (bwDelta30 > 0 ? '+' : '') + fmtNum(bwDelta30) + ' ' + S.unit}</div></div>
+      <div className="tile"><div className="l"><Icon name="scale" />{t('Weight 30d')}</div><div className="v" style={{ fontSize: 22, color: bwDelta30 === null ? 'inherit' : bwDeltaColor(bwDelta30, currentBW) }}>{bwDelta30 === null ? '—' : (bwDelta30 > 0 ? '+' : '') + fmtNum(bwDelta30) + ' ' + S.unit}</div></div>
     </div>
 
     <div className="card">
@@ -212,13 +352,17 @@ export default function Stats() {
 
     {S.workouts.length > 0 && <MuscleBalance S={S} />}
     {anyEffort && <EffortCard S={S} />}
+    {anyCardio && <CardioCard S={S} />}
+    {anySteps && <StepsCard S={S} />}
+    {anySleep && <SleepCard S={S} />}
+    <MeasurementsCard S={S} />
 
     <div className="cols">
       <div className="card">
         <div className="row between" style={{ marginBottom: 8 }}>
           <h2 style={{ margin: 0 }}>{t('Body weight')}</h2>
           <div className="row" style={{ gap: 8 }}>
-            <Button size="sm" icon="target" style={S.targetW ? { color: 'var(--yellow)' } : undefined} onClick={goalSheet}>{S.targetW ? fmtNum(S.targetW) : t('Goal')}</Button>
+            <Button size="sm" icon="target" style={S.targetW ? { color: 'var(--yellow-t)' } : undefined} onClick={goalSheet}>{S.targetW ? fmtNum(S.targetW) : t('Goal')}</Button>
             <Button size="sm" icon="plus" onClick={() => bwSheet()}>{t('Log')}</Button>
           </div>
         </div>

@@ -18,12 +18,13 @@
 
 import { modeOf, repStep } from './history.js'
 import { EXIDX } from './exercises.js'
+import { fmtNum } from './format.js'
 
-export const POLICIES = ['off', 'linear', 'greyskull', 'double', 'time']
+export const POLICIES = ['off', 'linear', 'greyskull', 'double', '531', 'time']
 
 // Which policies can sensibly drive which logging mode.
 export const POLICIES_FOR = {
-  reps: ['off', 'linear', 'greyskull', 'double'],
+  reps: ['off', 'linear', 'greyskull', 'double', '531'],
   time: ['off', 'time'],
   cardio: ['off']
 }
@@ -33,6 +34,7 @@ export const POLICY_NAME = {
   linear: 'Linear progression',
   greyskull: 'Greyskull LP',
   double: 'Double progression',
+  '531': '5/3/1',
   time: 'Add time'
 }
 export const POLICY_DESC = {
@@ -40,6 +42,7 @@ export const POLICY_DESC = {
   linear: 'Hit every rep in every set and the weight goes up. Repeated misses trigger a deload.',
   greyskull: 'Two straight sets plus a final set taken to failure. Beat the target on that set and the weight goes up — double if you double the reps. One failure resets 10 %.',
   double: 'Work up through a rep range at the same weight. Reach the top of the range in every set and the weight goes up, reps back to the bottom.',
+  '531': 'Four-week 5/3/1 wave based on your training max, including a deload week.',
   time: 'Hold every set for the full duration and the target goes up.'
 }
 
@@ -101,7 +104,9 @@ function deloadTo(cur, step) {
 export function readSession(entry, fallback) {
   const target = (entry && entry.target) || fallback || {}
   const mode = modeOf({ ...target, id: entry && entry.id })
-  const sets = (entry && entry.sets) || []
+  // Warm-ups are not part of the prescription: a light set under the target reps would read
+  // as a miss and hold the weight back.
+  const sets = ((entry && entry.sets) || []).filter(s => !s.warm)
   const planned = target.sets || sets.length
   const enough = sets.length >= planned
 
@@ -132,7 +137,7 @@ export function sessionsFor(S, exId, fallback) {
   const out = []
   ;(S.workouts || []).forEach(w => {
     const entry = w.entries.find(e => e.id === exId)
-    if (entry && entry.sets.some(s => s.done)) out.push({ d: w.d, ...readSession(entry, fallback) })
+    if (entry && entry.sets.some(s => s.done && !s.warm)) out.push({ d: w.d, ...readSession(entry, fallback) })
   })
   return out
 }
@@ -172,13 +177,22 @@ export function nextPrescription(S, cfg, routine) {
   if (mode === 'time') {
     if (last.ok) {
       const sec = (last.goal || cfg.sec || 0) + inc
-      return { policy, kind: 'up', sec, why: ['Held every set for the full time — target up by {0}s.', inc] }
+      return { policy, kind: 'up', sec, why: ['Held every set for the full time — target up by {0}s.', fmtNum(inc)] }
     }
     if (stalls >= deloadAt) {
       const sec = deloadTo(last.goal || cfg.sec || 0, 5)
-      return { policy, kind: 'deload', sec, why: ['Short {0} sessions in a row — back off to {1}s and build up again.', stalls, sec] }
+      return { policy, kind: 'deload', sec, why: ['Short {0} sessions in a row — back off to {1}s and build up again.', stalls, fmtNum(sec)] }
     }
     return { policy, kind: 'hold', sec: last.goal || cfg.sec, why: ['Last time came up short — same target again.'] }
+  }
+
+  if (policy === '531') {
+    const week = sessions.length % 4
+    const percentages = [[0.65, 0.75, 0.85], [0.7, 0.8, 0.9], [0.75, 0.85, 0.95], [0.4, 0.5, 0.6]][week]
+    const repsList = week === 0 ? [5, 5, 5] : week === 1 ? [3, 3, 3] : week === 2 ? [5, 3, 1] : [5, 5, 5]
+    const trainingMax = cfg.tm > 0 ? cfg.tm : (cfg.weight > 0 ? cfg.weight : last.weight)
+    const weights = percentages.map(pct => snap(trainingMax * pct, inc))
+    return { policy, kind: week === 3 ? 'deload' : 'up', weights, repsList, sets: 3, why: ['5/3/1 week {0} — percentages are based on a {1} {2} training max.', week + 1, fmtNum(trainingMax), unit] }
   }
 
   const w = last.weight
@@ -209,10 +223,10 @@ export function nextPrescription(S, cfg, routine) {
   if (policy === 'double') {
     const top = cfg.reps || last.goal || 10
     const bottom = Math.min(cfg.repsMin || Math.max(1, top - 2), top)
-    if (last.ok) return { policy, kind: 'up', weight: snap(w + inc, inc), reps: bottom, why: ['Top of the rep range in every set — {0} {1} more, back to {2} reps.', inc, unit, bottom] }
+    if (last.ok) return { policy, kind: 'up', weight: snap(w + inc, inc), reps: bottom, why: ['Top of the rep range in every set — {0} {1} more, back to {2} reps.', fmtNum(inc), unit, bottom] }
     if (stalls >= deloadAt) {
       const dw = deloadTo(w, inc)
-      return { policy, kind: 'deload', weight: dw, reps: bottom, why: ['Stalled {0} sessions — deload to {1} {2}.', stalls, dw, unit] }
+      return { policy, kind: 'deload', weight: dw, reps: bottom, why: ['Stalled {0} sessions — deload to {1} {2}.', stalls, fmtNum(dw), unit] }
     }
     const aim = Math.min(top, Math.max(bottom, last.low + repStep(cfg)))
     return { policy, kind: 'hold', weight: w, reps: aim, why: ['Same weight — aim for {0} reps this time.', aim] }
@@ -227,8 +241,8 @@ export function nextPrescription(S, cfg, routine) {
     return {
       policy, kind: 'up', weight: snap(w + step, inc),
       why: dbl
-        ? ['Last set hit {0} reps — twice the target, so take a double jump of {1} {2}.', last.amrap, step, unit]
-        : ['Every rep last time — {0} {1} more.', step, unit]
+        ? ['Last set hit {0} reps — twice the target, so take a double jump of {1} {2}.', last.amrap, fmtNum(step), unit]
+        : ['Every rep last time — {0} {1} more.', fmtNum(step), unit]
     }
   }
   if (stalls >= deloadAt) {
@@ -236,8 +250,8 @@ export function nextPrescription(S, cfg, routine) {
     return {
       policy, kind: 'deload', weight: dw,
       why: stalls > 1
-        ? ['Missed reps {0} sessions running — reset to {1} {2} and work back up.', stalls, dw, unit]
-        : ['Missed reps — reset to {0} {1} and work back up.', dw, unit]
+        ? ['Missed reps {0} sessions running — reset to {1} {2} and work back up.', stalls, fmtNum(dw), unit]
+        : ['Missed reps — reset to {0} {1} and work back up.', fmtNum(dw), unit]
     }
   }
   return { policy, kind: 'hold', weight: w, why: ['Missed reps last time — same weight again ({0} of {1} to go).', deloadAt - stalls, deloadAt] }
@@ -249,11 +263,13 @@ export function nextPrescription(S, cfg, routine) {
  */
 export function applyPrescription(sets, p) {
   if (!p || p.kind === 'off' || p.kind === 'first') return sets
-  const out = sets.map(s => {
+  const out = sets.map((s, i) => {
     if (s.done) return s
     const o = { ...s }
-    if (p.weight != null) o.w = p.weight
-    if (p.reps != null) o.r = p.reps
+    if (p.weights?.[i] != null) o.w = p.weights[i]
+    else if (p.weight != null) o.w = p.weight
+    if (p.repsList?.[i] != null) o.r = p.repsList[i]
+    else if (p.reps != null) o.r = p.reps
     if (p.sec != null) o.sec = p.sec
     return o
   })

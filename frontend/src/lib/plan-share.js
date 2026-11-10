@@ -9,6 +9,7 @@
 //     a page break — each exercise, and each routine that fits, stays in one place.
 
 import { EXIDX, isBodyweightEq } from './exercises.js'
+import { parseJSONLoose } from './coach-parse.js'
 import { modeOf, fmtSec, isBw, isPerSide, sideReps } from './history.js'
 import { uid, todayISO, DAYN, fmtNum, exCount } from './format.js'
 import { t } from './i18n.js'
@@ -22,7 +23,8 @@ function cleanEx(e) {
   const mode = modeOf(e)
   if (mode === 'cardio') {
     if (e.min != null) o.min = e.min
-    if (e.speed != null) o.speed = e.speed
+    if (e.km != null) o.km = e.km
+    if (e.speed != null) o.speed = e.speed          // plans written before distance was planned
   } else if (mode === 'time') {
     // Written out even though 'reps' is the fallback for a non-cardio id: a plan file that
     // dropped the mode would turn a 45-second plank into a 45-rep one at the other end.
@@ -72,9 +74,10 @@ export function buildPlanBundle(S, name) {
  * is trained.
  */
 export function parsePlan(raw) {
-  const data = typeof raw === 'string' ? JSON.parse(raw) : raw
+  // A pasted file may have been through a phone: typographic quotes are repaired, not refused.
+  const data = typeof raw === 'string' ? parseJSONLoose(raw) : raw
   if (!data || !data.opengym_plan || !Array.isArray(data.routines)) {
-    throw new Error(t('this isn’t an openGym plan file'))
+    throw new Error(t('this isn’t a Pass plan file'))
   }
   const customEx = (Array.isArray(data.customEx) ? data.customEx : []).filter(c => c && c.id)
   const known = new Set(customEx.map(c => c.id))
@@ -147,7 +150,8 @@ function scheme(e, unit) {
   const sets = e.sets || 1
   const mode = modeOf(e)
   if (mode === 'cardio') {
-    const body = `${e.min || 20} min @ ${fmtNum(e.speed || 8)} km/h`
+    // A speed only appears for plans that carry one; a new plan asks for minutes and, if wanted, a distance.
+    const body = `${e.min || 20} min` + (e.km ? ` · ${fmtNum(e.km)} km` : e.speed ? ` @ ${fmtNum(e.speed)} km/h` : '')
     return sets > 1 ? `${sets} × ${body}` : body
   }
   let s = mode === 'time' ? `${sets} × ${fmtSec(e.sec || 45)}` : `${sets} × ${e.reps ?? 10}`
@@ -251,7 +255,7 @@ export function planPrintHTML(S, owner) {
 </style></head>
 <body><div class="doc">
   <header>
-    <div class="kicker">openGym</div>
+    <div class="kicker">Pass</div>
     <h1>${esc(t('Weekly Training Plan'))}</h1>
     ${sub ? `<div class="sub">${sub}</div>` : ''}
   </header>
@@ -259,7 +263,7 @@ export function planPrintHTML(S, owner) {
   ${weekHTML(S)}
   <h3 class="block">${esc(t('Routines'))}</h3>
   ${body}
-  <footer>${esc(t('Made with openGym'))} · opengym.duarte-santos.ch</footer>
+  <footer>${esc(t('Made with Pass'))}</footer>
 </div></body></html>`
 }
 

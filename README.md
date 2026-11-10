@@ -1,3 +1,8 @@
+# Pass
+
+Pass is the family-test product name for this modified openGym fork. It remains licensed
+under the GNU AGPL v3.0; the original openGym documentation and attribution follow below.
+
 <div align="center">
 
 <img src="assets/banner.png" alt="openGym" width="720">
@@ -61,6 +66,9 @@ as a home-screen app, passkey sign-in, offline support, sync across your phone a
 - 🗓️ **Reschedule any day** — sick, missed a session, or fewer gym days this week? Move a workout to another day without touching your weekly plan
 - ▶️ **Guided workouts** — it knows what day it is and starts today's session; asks your body weight first, pre-fills your weights from last time, rest timer, PR detection, per-exercise weight tracking
 - ☀️ **The screen stays awake while you train** — no unlocking the phone and finding your place again between every set. On for as long as a workout is running, released the moment you finish it, and switchable off in Settings
+- 🧠 **A trainer that reads your log** — what your last four weeks say, in plain language: muscles short on sets for your goal, a muscle trained once a week, a lift that has stalled, signs a lighter week is due, weight falling too fast. The numbers come from fixed, tested rules, never from a model; each finding says whether it restates a study, reflects common practice or is the app's own rule of thumb, and links the paper. It won't judge on too little data. One tap can add sets to a routine (and undo it). Add an AI key and it can also write a short check-in and answer questions — held to the findings, so it can't invent a number or a reference
+- 🔥 **Warm-up sets** — tap a set's number to mark it as a warm-up. It stays in the log but doesn't count toward volume, progression, 1RM or "last time"; Hevy warm-ups are marked on import
+- 🍽️ **Meal plan** — a week built from the meals you've saved, in portion sizes that bring each day close to your targets. Your own foods and numbers, no AI and no key; a meal with a missing nutrient value is left out rather than guessed. One tap logs a planned meal, and there's a shopping list. Not generated for accounts with a medical condition, medication, diabetes mode or under 18 — the same bar as the nutrition assistant
 - 🔗 **Supersets** — build them, and log them back-to-back with a rest only after the pair
 - ⏱️ **Timed exercises** — planks, hangs, wall sits and loaded carries are logged by time, not reps, with a work timer that counts the set itself (separate from the rest timer) and logs the time you actually held. They can carry weight too
 - 📈 **Progression that follows a rule** — pick one per routine, override it per exercise: linear, **Greyskull LP** (AMRAP top set, double jumps, 10 % resets), double progression through a rep range, or adding time. Your weights are already right when the session opens, and every target says *why* it's that number. Missed reps never advance the load, stalls trigger a deload, and bodyweight exercises progress in reps instead
@@ -77,8 +85,8 @@ as a home-screen app, passkey sign-in, offline support, sync across your phone a
 - 🔔 **Push notifications** — rest-timer alerts even with the app closed, plus an optional reminder on days you have a workout planned but haven't logged one. Opt in per profile; keys are generated on first run, nothing to configure
 - 🔑 **Passkeys, not passwords** — Face ID / Touch ID / fingerprint login; each profile keeps its own data, synced across devices
 - 🛠️ **Admin dashboard** (optional) — for whoever runs the instance: who's training right now, per-user history, disable accounts, and invite-only signup. Off by default, so a fresh instance stays open with no admin
-- 🎨 **Designed, not assembled** — light/dark themes and 8 accent colors saved to your profile, over a hand-drawn icon set instead of emoji, so it looks the same on every phone
-- 🌍 **12 languages** — full UI translation (EN, DE, ES, FR, IT, PT, PL, TR, RU, ZH, KO, HI); exercise instructions localized in 10 of them, loaded on demand so the app stays fast
+- 🎨 **Designed, not assembled** — light/dark themes and 8 accent colors saved to your profile, over a hand-drawn icon set instead of emoji, so it looks the same on every phone. Follows the iOS 26 look: a floating glass tab bar that folds as you scroll, inset sheets, capsule controls, a Frosted/Clear glass choice, WCAG AA text contrast (tested) and 44-point tap targets
+- 🌍 **13 languages** — full UI translation (EN, DE, ES, FR, IT, PT, PL, SV, TR, RU, ZH, KO, HI); exercise instructions localized in 10 of them, loaded on demand so the app stays fast
 - 📥 **Bring your history with you** — import from **FitNotes** (Android and iOS), **Strong** and **Hevy**, or body weight straight out of an **Apple Health** export. Exercise names are matched against the library and anything unrecognised becomes one of your own exercises, so nothing in the file is dropped
 - 📦 **Yours to keep** — one-tap JSON export/import, guest mode, **no telemetry**
 - 📱 **Standalone Android app** — the whole tracker as a sideloadable APK: no account, no server, data on the phone, native workout reminders ([download](https://opengym.duarte-santos.ch))
@@ -99,6 +107,8 @@ Open **http://localhost:8080**, tap **Create profile**, and you're in. First lau
 the exercise media (~140 MB) once. Prefer building the images yourself instead of pulling from
 `ghcr.io`? Drop the `pull` step and run `docker compose up -d --build` — you don't need Node or
 a build step locally either way.
+
+> Deploying on Vercel instead? There is a `vercel.json`, but the API stores everything in files and Vercel has no persistent disk — read **[docs/VERCEL.md](docs/VERCEL.md)** first.
 
 > Want it reachable from your phone over the internet with passkeys? You'll need an HTTPS
 > domain — a two-line change in `.env`. See **[docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)**.
@@ -151,7 +161,7 @@ All via `.env` (see `.env.example`):
 | `RP_ID`       | Hostname passkeys are bound to                       | `localhost`             |
 | `ORIGIN`      | Full URL the app is served from                      | `http://localhost:8080` |
 | `WEB_PORT`    | Host port for the web UI                             | `8080`                  |
-| `RP_NAME`     | Name shown in the passkey prompt                     | `openGym`               |
+| `RP_NAME`     | Name shown in the passkey prompt                     | `Pass`               |
 | `ADMIN_UIDS`  | User ids that get the admin dashboard (comma-separated) | *(none)*             |
 | `INVITE_ONLY` | Require an invite code to create a profile           | *(off)*                 |
 

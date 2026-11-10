@@ -1,7 +1,7 @@
 {
-  "name": "openGym",
-  "short_name": "openGym",
-  "description": "Personal gym & body weight tracker",
+  "name": "Pass",
+  "short_name": "Pass",
+  "description": "Family training, food and diabetes log",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

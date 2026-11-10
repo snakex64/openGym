@@ -24,11 +24,14 @@ import { uid } from './format.js'
 /* ----------------------------------------------------------------- CSV ---- */
 
 /**
- * A real CSV reader: quoted fields, embedded commas and newlines, doubled quotes, BOM
+ * A real CSV reader: quoted fields, embedded separators and newlines, doubled quotes, BOM
  * and CRLF. Splitting on commas breaks on the first exercise named "Bench Press, Close
  * Grip" — and a whole history would import shifted by one column without ever erroring.
+ *
+ * The separator is a parameter because a CSV written by a European tool is very often
+ * semicolon-delimited: comma is the decimal point there, so the two cannot both be commas.
  */
-export function parseCSV(text) {
+export function parseCSV(text, delim = ',') {
   const rows = []
   let row = [], field = '', quoted = false
   const s = String(text).replace(/^﻿/, '')
@@ -38,7 +41,7 @@ export function parseCSV(text) {
       if (c === '"') { if (s[i + 1] === '"') { field += '"'; i++ } else quoted = false }
       else field += c
     } else if (c === '"') quoted = true
-    else if (c === ',') { row.push(field); field = '' }
+    else if (c === delim) { row.push(field); field = '' }
     else if (c === '\n' || c === '\r') {
       if (c === '\r' && s[i + 1] === '\n') i++
       row.push(field); field = ''
@@ -76,6 +79,11 @@ const COLUMNS = [
   ['seconds', ['seconds', 'duration seconds']],
   ['time', ['time', 'duration']],
   ['setType', ['set type']],
+  // Garmin Connect's steps report calls the column "Actual"; everything else says steps.
+  ['steps', ['steps', 'step count', 'total steps', 'actual']],
+  // Garmin and Strava both write one average heart rate per activity. Nothing that logs
+  // weighted sets exports a pulse, so this only ever reaches a cardio row.
+  ['hr', ['avg hr', 'average heart rate', 'avg heart rate', 'heart rate', 'average hr']],
   ['note', ['comment', 'comments', 'notes', 'note']],
 ]
 
@@ -334,7 +342,8 @@ export function parseWorkoutCSV(text, { unit = 'kg' } = {}) {
       ? num(cell(r, 'distanceKm'))
       : toKm(cell(r, 'distance'), cell(r, 'distanceUnit'))
     if (!w && !reps && !mins && !km) { skipped++; continue }
-    if (/warm/i.test(cell(r, 'setType'))) warmups++
+    const isWarm = /warm/i.test(cell(r, 'setType'))
+    if (isWarm) warmups++
 
     const key = keyOf(name)
     let id = resolved.get(key)
@@ -356,9 +365,17 @@ export function parseWorkoutCSV(text, { unit = 'kg' } = {}) {
     const isCardio = (km > 0 || mins > 0) && !reps
     // `u` carries the row's own unit into the conversion pass below and is dropped there —
     // it never reaches the stored set.
+    // The distance is what the watch measured, so it is what gets stored — collapsing it
+    // into a speed and deriving it back would lose the only figure the file was sure of.
     const set = isCardio
-      ? { min: mins || 0, speed: mins > 0 ? Math.round(km / (mins / 60) * 10) / 10 : 0, done: true }
+      ? { min: mins || 0, ...(km > 0 ? { km: Math.round(km * 100) / 100 } : {}), done: true }
       : { w, r: reps || 0, done: true, u: rowUnit }
+    // A warm-up stays in the log but is marked, so the trainer's volume counts work sets only.
+    if (isWarm && !isCardio) set.warm = true
+    if (isCardio) {
+      const hr = num(cell(r, 'hr'))
+      if (hr > 0) set.hr = Math.round(hr)
+    }
     // Effort rides along only where the app can show it again: a weighted rep set. A treadmill
     // row with an RPE would have nowhere to put it. A set is kept on one scale, so a file
     // carrying both columns is read as RIR — the same precedence setLabel reads them back with.
@@ -443,7 +460,8 @@ export function parseWorkoutCSV(text, { unit = 'kg' } = {}) {
  */
 export function parseBodyweight(text, { unit = 'kg' } = {}) {
   const s = String(text)
-  const out = new Map()          // iso date -> { w, t }  (one weigh-in per day, the last)
+  const out = new Map()          // iso date -> { w, u, t }  (one weigh-in per day, the last)
+  const units = new Set()
   let fileUnit = ''
 
   if (s.includes('HKQuantityTypeIdentifierBodyMass')) {
@@ -457,8 +475,9 @@ export function parseBodyweight(text, { unit = 'kg' } = {}) {
       if (!val || !dt) continue
       const when = parseWhen(dt[1])
       if (!when) continue
-      if (u) fileUnit = /lb/i.test(u[1]) ? 'lb' : 'kg'
-      out.set(when.d, { w: parseFloat(val[1]), t: new Date(dt[1]).getTime() || null })
+      const rowUnit = u ? (/lb/i.test(u[1]) ? 'lb' : 'kg') : unit
+      units.add(rowUnit)
+      out.set(when.d, { w: parseFloat(val[1]), u: rowUnit, t: new Date(dt[1]).getTime() || null })
     }
   } else {
     const rows = parseCSV(s)
@@ -470,31 +489,380 @@ export function parseBodyweight(text, { unit = 'kg' } = {}) {
     if (wCol === undefined || dCol === undefined) return { error: 'unrecognised' }
     if (map.weightKg !== undefined) fileUnit = 'kg'
     else if (map.weightLb !== undefined) fileUnit = 'lb'
+    const rowUnit = fileUnit || unit
+    units.add(rowUnit)
     for (let i = 1; i < rows.length; i++) {
       const when = parseWhen(String(rows[i][dCol] ?? ''))
       const w = num(rows[i][wCol])
       if (!when || !w) continue
-      out.set(when.d, { w, t: new Date(when.d).getTime() + (when.t ?? 0) })
+      out.set(when.d, { w, u: rowUnit, t: new Date(when.d).getTime() + (when.t ?? 0) })
     }
   }
 
   if (!out.size) return { error: 'unrecognised' }
-  const converted = !!fileUnit && fileUnit !== unit
-  const conv = converted
-    ? (fileUnit === 'lb' ? x => Math.round(x * LB_TO_KG * 10) / 10 : x => Math.round(x / LB_TO_KG * 10) / 10)
-    : x => Math.round(x * 10) / 10
+  const mixedUnits = units.size > 1
+  fileUnit = mixedUnits ? '' : [...units][0]
+  const converted = [...out.values()].some(row => row.u !== unit)
+  const conv = row => Math.round((row.u === unit ? row.w : row.u === 'lb' ? row.w * LB_TO_KG : row.w / LB_TO_KG) * 10) / 10
   const dates = [...out.keys()].sort()
   return {
     kind: 'bodyweight', source: 'Apple Health',
-    bodyweight: dates.map(d => ({ d, w: conv(out.get(d).w), t: out.get(d).t || new Date(d).getTime() })),
-    fileUnit, converted, from: dates[0], to: dates[dates.length - 1],
+    bodyweight: dates.map(d => ({ d, w: conv(out.get(d)), u: unit, t: out.get(d).t || new Date(d).getTime() })),
+    fileUnit, mixedUnits, converted, from: dates[0], to: dates[dates.length - 1],
+  }
+}
+
+/**
+ * Cardio sessions out of an Apple Health export.
+ *
+ * Same scan-don't-parse approach the body-mass reader uses, and for the same reason: the
+ * file is often several hundred megabytes and building a DOM would take the tab with it.
+ *
+ * Health has written workouts two ways. Older exports put everything on the element —
+ * duration, totalDistance and their units as attributes. Since iOS 16 the distance moved
+ * into a WorkoutStatistics child, and the heart rate has always lived there. Both shapes are
+ * read, because an export sitting on someone's disk is whatever iOS wrote the day they made
+ * it, not whatever is current.
+ *
+ * Activities the exercise catalogue has no entry for become one of your own exercises rather
+ * than being dropped — the same promise the workout importer already makes.
+ */
+export function parseHealthWorkouts(text) {
+  const s = String(text)
+  if (!s.includes('<Workout ')) return { error: 'unrecognised' }
+
+  const attr = (tag, name) => {
+    const m = new RegExp(name + '="([^"]*)"').exec(tag)
+    return m ? m[1] : ''
+  }
+  // A metre or a mile in the file is still a kilometre in the app.
+  const toKmUnit = (value, unit) => {
+    const v = num(value)
+    if (!(v > 0)) return 0
+    const u = String(unit || 'km').toLowerCase()
+    if (u.startsWith('mi')) return v * 1.609344
+    if (u === 'm') return v / 1000
+    if (u === 'yd') return v * 0.0009144
+    return v
+  }
+  const toMinutes = (value, unit) => {
+    const v = num(value)
+    if (!(v > 0)) return 0
+    const u = String(unit || 'min').toLowerCase()
+    return u.startsWith('s') ? v / 60 : u.startsWith('h') ? v * 60 : v
+  }
+
+  const byDate = new Map()
+  const created = new Map(), resolved = new Map(), unmatched = new Set()
+  let matched = 0, sets = 0, skipped = 0
+  const blocks = s.match(/<Workout\b[^>]*(?:\/>|>[\s\S]*?<\/Workout>)/g) || []
+
+  for (const block of blocks) {
+    const open = /<Workout\b[^>]*?(?:\/?>)/.exec(block)?.[0] || block
+    const when = parseWhen(attr(open, 'startDate'))
+    if (!when) { skipped++; continue }
+
+    let min = toMinutes(attr(open, 'duration'), attr(open, 'durationUnit'))
+    let km = toKmUnit(attr(open, 'totalDistance'), attr(open, 'totalDistanceUnit'))
+    let hr = 0
+    for (const stat of block.match(/<WorkoutStatistics\b[^>]*>/g) || []) {
+      const type = attr(stat, 'type')
+      if (/DistanceWalkingRunning|DistanceCycling|DistanceSwimming/.test(type) && !(km > 0)) {
+        km = toKmUnit(attr(stat, 'sum'), attr(stat, 'unit'))
+      } else if (/HeartRate/.test(type)) {
+        hr = num(attr(stat, 'average'))
+      }
+    }
+    if (!(min > 0) && !(km > 0)) { skipped++; continue }
+
+    // "HKWorkoutActivityTypeHighIntensityIntervalTraining" is not a name anybody reads.
+    const raw = attr(open, 'workoutActivityType').replace(/^HKWorkoutActivityType/, '')
+    const name = (raw.replace(/([a-z])([A-Z])/g, '$1 $2').trim() || 'workout').toLowerCase()
+    const key = keyOf(name)
+    let id = resolved.get(key)
+    if (id === undefined) { id = matchExercise(name); resolved.set(key, id) }
+    if (id) matched++
+    else {
+      let c = created.get(key)
+      if (!c) {
+        c = { id: 'im' + uid(), n: name, custom: true, eq: 'custom', tg: '', desc: '', bp: 'cardio' }
+        created.set(key, c)
+        unmatched.add(name)
+      }
+      id = c.id
+    }
+
+    const set = {
+      min: Math.round(min),
+      ...(km > 0 ? { km: Math.round(km * 100) / 100 } : {}),
+      ...(hr > 0 ? { hr: Math.round(hr) } : {}),
+      done: true
+    }
+    let day = byDate.get(when.d)
+    if (!day) byDate.set(when.d, day = { ex: new Map(), start: when.t })
+    if (!day.ex.has(id)) day.ex.set(id, [])
+    day.ex.get(id).push(set)
+    sets++
+  }
+
+  if (!sets) return { error: 'unrecognised' }
+  const dates = [...byDate.keys()].sort()
+  const workouts = dates.map(d => {
+    const day = byDate.get(d)
+    const base = new Date(d + 'T00:00:00').getTime()
+    const start = base + (day.start ?? 12 * 3600000)
+    const minutes = [...day.ex.values()].flat().reduce((n, x) => n + (x.min || 0), 0)
+    return {
+      id: 'iw' + uid(), d, start, end: start + minutes * 60000,
+      routineId: null, name: 'Apple Health', prs: [],
+      // The mode is carried explicitly: a custom exercise created here is cardio by body
+      // part, but a matched catalogue entry must not be re-read as a set of reps.
+      entries: [...day.ex.entries()].map(([id, ss]) => ({ id, target: { mode: 'cardio' }, sets: ss, topW: null }))
+    }
+  })
+  return {
+    kind: 'workouts', source: 'Apple Health',
+    workouts, customEx: [...created.values()],
+    sets, matched, created: created.size, unmatched: [...unmatched], skipped,
+    fileUnit: '', mixedUnits: false, converted: false, warmups: 0, rirSets: 0, rpeSets: 0,
+    from: dates[0], to: dates[dates.length - 1]
+  }
+}
+
+/**
+ * Daily step counts, from an Apple Health export or a steps CSV.
+ *
+ * THE DUPLICATE PROBLEM
+ *
+ * An iPhone in a pocket and a watch on the wrist both count the same walk, and Health's
+ * export contains both sets of records. The Health app reconciles them before it draws a
+ * number; the raw file does not, so adding everything up reports roughly twice the steps
+ * anybody took.
+ *
+ * The reconciliation is done per hour, not per day. Taking the day's largest source would be
+ * simpler and wrong for the ordinary case of a watch worn some of the time: a shift worked
+ * with the phone alone would win the day outright and take the evening's walk — which only
+ * the watch saw — down with it. Hour by hour, each device is counted where it was the one
+ * carrying, and the larger figure wins where both were. A walk is never counted twice, and
+ * an hour only one device saw is never lost.
+ *
+ * It remains an approximation. Health de-duplicates by the exact interval, so an hour split
+ * between two devices is under-counted here by whichever part the loser recorded. The error
+ * is bounded by an hour of walking and always downward, which is the direction to be wrong
+ * in. The source that contributed most is stored beside the day so a surprising figure can
+ * be traced rather than argued with.
+ *
+ * One number per day is all this keeps. Steps by the hour are a different feature, and
+ * storing a quarter of a million records to render a daily average would be a poor trade.
+ */
+export function parseSteps(text, { source = '' } = {}) {
+  const s = String(text)
+  const byDay = new Map()          // iso -> Map(hour -> Map(sourceName -> steps))
+  const add = (d, hour, src, n) => {
+    if (!(n > 0)) return
+    let day = byDay.get(d)
+    if (!day) byDay.set(d, day = new Map())
+    let slot = day.get(hour)
+    if (!slot) day.set(hour, slot = new Map())
+    slot.set(src, (slot.get(src) || 0) + n)
+  }
+
+  if (s.includes('HKQuantityTypeIdentifierStepCount')) {
+    const re = /<Record[^>]*type="HKQuantityTypeIdentifierStepCount"[^>]*>/g
+    let m
+    while ((m = re.exec(s))) {
+      const tag = m[0]
+      const val = /value="([\d.]+)"/.exec(tag)
+      const dt = /startDate="([^"]+)"/.exec(tag)
+      if (!val || !dt) continue
+      const when = parseWhen(dt[1])
+      if (!when) continue
+      const src = (/sourceName="([^"]*)"/.exec(tag) || [, 'Apple Health'])[1]
+      // Health writes local time with an offset; the hour as printed is the hour lived.
+      const hour = Number((/[T ](\d{2}):/.exec(dt[1]) || [, -1])[1])
+      add(when.d, hour, src, parseFloat(val[1]))
+    }
+  } else {
+    const rows = parseCSV(s)
+    if (rows.length < 2) return { error: 'empty' }
+    const map = mapHeader(rows[0])
+    const dCol = map.steps === undefined ? undefined : (map.date ?? map.startTime)
+    if (dCol === undefined) return { error: 'unrecognised' }
+    for (let i = 1; i < rows.length; i++) {
+      const when = parseWhen(String(rows[i][dCol] ?? ''))
+      // Garmin writes thousands separators into its reports: "12,431" is one day, not two.
+      const n = num(String(rows[i][map.steps] ?? '').replace(/[\s,](?=\d{3}\b)/g, ''))
+      // A steps CSV is already one row per day, so there is nothing to reconcile.
+      if (when && n > 0) add(when.d, 0, source || 'CSV', n)
+    }
+  }
+
+  if (!byDay.size) return { error: 'unrecognised' }
+  const sources = new Set()
+  let overlapped = false
+  const dates = [...byDay.keys()].sort()
+  const steps = dates.map(d => {
+    const day = byDay.get(d)
+    let total = 0
+    const perSource = new Map()
+    for (const slot of day.values()) {
+      if (slot.size > 1) overlapped = true
+      let best = '', n = 0
+      for (const [src, hourly] of slot) if (hourly > n) { n = hourly; best = src }
+      total += n
+      perSource.set(best, (perSource.get(best) || 0) + n)
+    }
+    // The day is attributed to whichever device won the most steps across its hours.
+    let src = '', won = 0
+    for (const [name, n] of perSource) if (n > won) { won = n; src = name }
+    sources.add(src)
+    return { d, n: Math.round(total), src }
+  }).filter(row => row.n > 0)
+  if (!steps.length) return { error: 'unrecognised' }
+
+  return {
+    kind: 'steps', source: source || (s.includes('HKQuantityTypeIdentifierStepCount') ? 'Apple Health' : ''),
+    steps, sources: [...sources],
+    // Only worth saying when more than one device contributed; on a single-source file the
+    // reconciliation did nothing and mentioning it would only raise a question.
+    deduplicated: overlapped || sources.size > 1,
+    from: steps[0].d, to: steps[steps.length - 1].d
+  }
+}
+
+/**
+ * Nightly sleep from an Apple Health export.
+ *
+ * A `HKCategoryTypeIdentifierSleepAnalysis` record is an interval, not a point value, and
+ * three kinds of it are written: InBed, Awake, and several Asleep* values (Core/Deep/REM on
+ * a watch, or the plain Asleep an app writes without stages). Only the Asleep* intervals are
+ * kept — InBed overstates a night by however long it took to fall asleep, and Awake is not
+ * sleep at all.
+ *
+ * A night is attributed by shifting its start back twelve hours before taking the date: a
+ * 23:40 bedtime and a 07:10 wake-up both land on the evening's date, so the night reads under
+ * the day it began rather than the day it ended.
+ *
+ * THE OVERLAP PROBLEM
+ *
+ * A phone, a watch and a third-party sleep app can all log the same night, and unlike steps
+ * this is a duration, not a count — summing overlapping intervals overstates it directly. The
+ * fix is a plain interval union: every Asleep* interval for a night, from any source, is
+ * merged into non-overlapping spans and the spans are summed. Two sources both covering
+ * 23:00–07:00 union to eight hours, not sixteen; two that only partly overlap union to their
+ * combined span, not their combined length. The source whose own raw intervals covered the
+ * most of the night is kept beside the total, the same trace-a-surprising-night purpose the
+ * steps importer's per-day source serves.
+ */
+export function parseSleep(text) {
+  const s = String(text)
+  if (!s.includes('HKCategoryTypeIdentifierSleepAnalysis')) return { error: 'unrecognised' }
+
+  const localMs = w => (w ? new Date(w.d + 'T00:00:00').getTime() + (w.t || 0) : null)
+  const nightOf = ms => {
+    const dt = new Date(ms - 12 * 3600000)
+    return `${dt.getFullYear()}-${p2(dt.getMonth() + 1)}-${p2(dt.getDate())}`
+  }
+
+  const byNight = new Map()          // night -> [{ start, end, src }]
+  const re = /<Record[^>]*type="HKCategoryTypeIdentifierSleepAnalysis"[^>]*\/?>/g
+  let m
+  while ((m = re.exec(s))) {
+    const tag = m[0]
+    const val = /value="([^"]*)"/.exec(tag)
+    if (!val || !/Asleep/.test(val[1])) continue
+    const st = /startDate="([^"]+)"/.exec(tag)
+    const en = /endDate="([^"]+)"/.exec(tag)
+    if (!st || !en) continue
+    const start = localMs(parseWhen(st[1]))
+    const end = localMs(parseWhen(en[1]))
+    if (!start || !end || end <= start) continue
+    const src = (/sourceName="([^"]*)"/.exec(tag) || [, 'Apple Health'])[1]
+    const night = nightOf(start)
+    let list = byNight.get(night)
+    if (!list) byNight.set(night, list = [])
+    list.push({ start, end, src })
+  }
+
+  if (!byNight.size) return { error: 'unrecognised' }
+  const sources = new Set()
+  let overlapped = false
+  const dates = [...byNight.keys()].sort()
+  const sleep = dates.map(d => {
+    const list = byNight.get(d).sort((a, b) => a.start - b.start)
+    const bySrc = new Map()
+    for (const r of list) { sources.add(r.src); bySrc.set(r.src, (bySrc.get(r.src) || 0) + (r.end - r.start)) }
+    if (bySrc.size > 1) overlapped = true
+
+    let min = 0, curStart = null, curEnd = null
+    for (const r of list) {
+      if (curStart === null) { curStart = r.start; curEnd = r.end; continue }
+      if (r.start <= curEnd) curEnd = Math.max(curEnd, r.end)
+      else { min += curEnd - curStart; curStart = r.start; curEnd = r.end }
+    }
+    if (curStart !== null) min += curEnd - curStart
+
+    let src = '', best = 0
+    for (const [name, ms] of bySrc) if (ms > best) { best = ms; src = name }
+    return { d, min: Math.round(min / 60000), src }
+  }).filter(row => row.min > 0)
+
+  if (!sleep.length) return { error: 'unrecognised' }
+  return {
+    kind: 'sleep', source: 'Apple Health',
+    sleep, sources: [...sources],
+    deduplicated: overlapped || sources.size > 1,
+    from: sleep[0].d, to: sleep[sleep.length - 1].d
+  }
+}
+
+/**
+ * The parts of one Health export, as a single import.
+ *
+ * Each part keeps the shape its own reader produced, so the merge and the preview can go on
+ * treating workouts as workouts and steps as steps. What the combined result adds is a date
+ * range covering all of them and a flag per part, which is what the confirmation screen
+ * needs to say what is about to land.
+ */
+function combineHealth(parts) {
+  const of = kind => parts.find(p => p.kind === kind) || null
+  const workouts = of('workouts'), steps = of('steps'), sleepPart = of('sleep'), weights = of('bodyweight')
+  const dates = parts.flatMap(p => [p.from, p.to]).filter(Boolean).sort()
+  return {
+    kind: 'health', source: 'Apple Health',
+    workouts: workouts ? workouts.workouts : [],
+    customEx: workouts ? workouts.customEx : [],
+    sets: workouts ? workouts.sets : 0,
+    matched: workouts ? workouts.matched : 0,
+    created: workouts ? workouts.created : 0,
+    unmatched: workouts ? workouts.unmatched : [],
+    steps: steps ? steps.steps : [],
+    stepSources: steps ? steps.sources : [],
+    deduplicated: steps ? steps.deduplicated : false,
+    sleep: sleepPart ? sleepPart.sleep : [],
+    sleepSources: sleepPart ? sleepPart.sources : [],
+    sleepDeduplicated: sleepPart ? sleepPart.deduplicated : false,
+    bodyweight: weights ? weights.bodyweight : [],
+    fileUnit: weights ? weights.fileUnit : '',
+    mixedUnits: weights ? weights.mixedUnits : false,
+    converted: weights ? weights.converted : false,
+    warmups: 0, rirSets: 0, rpeSets: 0,
+    from: dates[0], to: dates[dates.length - 1]
   }
 }
 
 /** Sniff the file and parse it as whatever it is. */
 export function parseImport(text, opts) {
   const s = String(text)
-  if (s.includes('HKQuantityTypeIdentifier') || /^\s*</.test(s)) return parseBodyweight(s, opts)
+  // One Health export holds workouts, steps, sleep and weights together. Picking one and
+  // silently leaving the rest would mean feeding the same few hundred megabytes in more than
+  // once, so everything that parses is taken in a single pass.
+  if (s.includes('HKQuantityTypeIdentifier') || s.includes('HKCategoryTypeIdentifier') || s.includes('<Workout ')) {
+    const parts = [parseHealthWorkouts(s), parseSteps(s), parseSleep(s), parseBodyweight(s, opts)].filter(p => !p.error)
+    if (parts.length === 1) return parts[0]
+    if (parts.length > 1) return combineHealth(parts)
+  }
+  if (/^\s*</.test(s)) return parseBodyweight(s, opts)
   const asWorkouts = parseWorkoutCSV(s, opts)
   if (!asWorkouts.error) return asWorkouts
   const asWeights = parseBodyweight(s, opts)
@@ -504,23 +872,66 @@ export function parseImport(text, opts) {
 /* --------------------------------------------------------------- merge ---- */
 
 /** Merge into state. Existing days win — importing twice never duplicates a workout. */
-export function mergeImport(S, parsed) {
-  if (parsed.kind === 'bodyweight') {
-    const have = new Set(S.bodyweight.map(b => b.d))
-    const fresh = parsed.bodyweight.filter(b => !have.has(b.d))
-    S.bodyweight = [...S.bodyweight, ...fresh].sort((a, b) => (a.d < b.d ? -1 : 1))
-    return { added: fresh.length, skipped: parsed.bodyweight.length - fresh.length }
-  }
+// Each of these adds only the days the profile does not already have. An import never
+// overwrites what is already stored — a file is evidence about days you have no record of,
+// not a correction of the ones you typed yourself.
+function mergeBodyweight(S, rows) {
+  const have = new Set(S.bodyweight.map(b => b.d))
+  const fresh = rows.filter(b => !have.has(b.d))
+  S.bodyweight = [...S.bodyweight, ...fresh].sort((a, b) => (a.d < b.d ? -1 : 1))
+  return fresh.length
+}
+
+function mergeSteps(S, rows) {
+  const have = new Set((S.steps || []).map(x => x.d))
+  const fresh = rows.filter(x => !have.has(x.d)).map(x => ({ ...x, src: 'import' }))
+  S.steps = [...(S.steps || []), ...fresh].sort((a, b) => (a.d < b.d ? -1 : 1))
+  return fresh.length
+}
+
+function mergeSleep(S, rows) {
+  const have = new Set((S.sleep || []).map(x => x.d))
+  const fresh = rows.filter(x => !have.has(x.d)).map(x => ({ ...x, src: 'import' }))
+  S.sleep = [...(S.sleep || []), ...fresh].sort((a, b) => (a.d < b.d ? -1 : 1))
+  return fresh.length
+}
+
+function mergeWorkouts(S, parsed) {
   const have = new Set(S.workouts.map(w => w.d))
   const fresh = parsed.workouts.filter(w => !have.has(w.d))
   const used = new Set(fresh.flatMap(w => w.entries.map(e => e.id)))
-  const customs = parsed.customEx.filter(c => used.has(c.id) && !EXIDX[c.id])
+  const customs = (parsed.customEx || []).filter(c => used.has(c.id) && !EXIDX[c.id])
   S.customEx = [...(S.customEx || []), ...customs]
   S.workouts = [...S.workouts, ...fresh].sort((a, b) => (a.d < b.d ? -1 : 1))
-  // seed the weight suggestions from the newest imported set of each lift
   fresh.forEach(w => w.entries.forEach(e => {
     const mx = Math.max(0, ...e.sets.map(s => s.w || 0), e.topW || 0)
     if (mx > 0) { const cur = S.exWeights[e.id]; if (!cur || w.d >= cur.d) S.exWeights[e.id] = { w: mx, d: w.d } }
   }))
-  return { added: fresh.length, skipped: parsed.workouts.length - fresh.length }
+  return fresh.length
+}
+
+export function mergeImport(S, parsed) {
+  if (parsed.kind === 'health') {
+    const added = {
+      workouts: mergeWorkouts(S, parsed),
+      steps: mergeSteps(S, parsed.steps),
+      sleep: mergeSleep(S, parsed.sleep),
+      bodyweight: mergeBodyweight(S, parsed.bodyweight)
+    }
+    return { ...added, added: added.workouts + added.steps + added.sleep + added.bodyweight }
+  }
+  if (parsed.kind === 'steps') {
+    const n = mergeSteps(S, parsed.steps)
+    return { added: n, skipped: parsed.steps.length - n }
+  }
+  if (parsed.kind === 'sleep') {
+    const n = mergeSleep(S, parsed.sleep)
+    return { added: n, skipped: parsed.sleep.length - n }
+  }
+  if (parsed.kind === 'bodyweight') {
+    const n = mergeBodyweight(S, parsed.bodyweight)
+    return { added: n, skipped: parsed.bodyweight.length - n }
+  }
+  const n = mergeWorkouts(S, parsed)
+  return { added: n, skipped: parsed.workouts.length - n }
 }

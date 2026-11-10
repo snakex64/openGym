@@ -1,0 +1,35 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "api": {
+      "root": "api",
+      "runtime": "node",
+      "entrypoint": "server.js"
+    },
+    "frontend": {
+      "root": "frontend",
+      "framework": "vite",
+      "buildCommand": "node ../scripts/build-foods.mjs && VITE_SPEED_INSIGHTS=1 VITE_IMG_BASE=https://raw.githubusercontent.com/hasaneyldrm/exercises-dataset/main/images/ VITE_GIF_BASE=https://raw.githubusercontent.com/hasaneyldrm/exercises-dataset/main/videos/ npm run build"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": {
+        "service": "api"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "frontend"
+      }
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/backup",
+      "schedule": "17 3 * * *"
+    }
+  ]
+}

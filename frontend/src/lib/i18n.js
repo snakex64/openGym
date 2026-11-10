@@ -5,20 +5,32 @@
 // language, from the upstream dataset) — also lazy-loaded on language switch.
 import { useSyncExternalStore } from 'react'
 
-// UI languages. de/pt have no instruction pack upstream — instructions fall back to English.
+// UI languages. Every language has an instruction pack. The sv, de and pt packs were
+// translated from the English steps (src/instr/); the rest come from the upstream dataset.
 export const LANGS = {
   en: 'English', de: 'Deutsch', es: 'Español', fr: 'Français', it: 'Italiano',
-  pt: 'Português', pl: 'Polski', tr: 'Türkçe', ru: 'Русский', zh: '中文',
-  ko: '한국어', hi: 'हिन्दी'
+  pt: 'Português', pl: 'Polski', sv: 'Svenska', tr: 'Türkçe', ru: 'Русский',
+  zh: '中文', ko: '한국어', hi: 'हिन्दी'
 }
-export const INSTR_LANGS = ['en', 'es', 'fr', 'it', 'tr', 'ru', 'zh', 'hi', 'pl', 'ko']
+export const INSTR_LANGS = ['en', 'de', 'pt', 'sv', 'es', 'fr', 'it', 'tr', 'ru', 'zh', 'hi', 'pl', 'ko']
 const DATE_LOCALES = {
   en: 'en-GB', de: 'de-DE', es: 'es-ES', fr: 'fr-FR', it: 'it-IT', pt: 'pt-PT',
-  pl: 'pl-PL', tr: 'tr-TR', ru: 'ru-RU', zh: 'zh-CN', ko: 'ko-KR', hi: 'hi-IN'
+  pl: 'pl-PL', sv: 'sv-SE', tr: 'tr-TR', ru: 'ru-RU', zh: 'zh-CN', ko: 'ko-KR',
+  hi: 'hi-IN'
 }
 
 const localePacks = import.meta.glob('../locales/*.js')
 const instrPacks = import.meta.glob('../instr/*.js')
+
+// The language to start in when nothing has been chosen yet: the first of the browser's
+// preferred languages that the app has a pack for, else English.
+export function detectLang(prefs = typeof navigator !== 'undefined' ? (navigator.languages?.length ? navigator.languages : [navigator.language]) : []) {
+  for (const p of prefs || []) {
+    const base = String(p || '').toLowerCase().split('-')[0]
+    if (LANGS[base]) return base
+  }
+  return 'en'
+}
 
 let lang = 'en'
 let dict = {}

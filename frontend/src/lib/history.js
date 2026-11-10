@@ -1,6 +1,7 @@
 // Pure helpers over the state object S (ported 1:1 from the vanilla app).
 import { todayISO, isoOf, weekKey, fmtNum } from './format.js'
 import { isCardio, isBodyweightEq } from './exercises.js'
+import { formatCardioSet, sumCardio } from './cardio.js'
 import { t } from './i18n.js'
 
 // How an exercise is logged (issue #16). This used to be derived from the body part alone,
@@ -8,7 +9,7 @@ import { t } from './i18n.js'
 // A routine entry can now say so explicitly:
 //   reps   — weight × reps      sets look like { w, r }
 //   time   — a work duration    sets look like { sec, w }   (w = 0 for bodyweight)
-//   cardio — duration + speed   sets look like { min, speed }
+//   cardio — duration + distance sets look like { min, km } (older ones carry { min, speed })
 // An entry without `mode` behaves exactly as before, so every existing plan, workout and
 // plan file is read unchanged and nothing needs migrating.
 export function modeOf(cfg) {
@@ -94,7 +95,7 @@ const effortTail = s => {
 export function setLabel(id, s, cfg) {
   const c = cfg || { id }
   const mode = modeOf(c)
-  if (mode === 'cardio') return `${s.min || 0} min @ ${fmtNum(s.speed || 0)} km/h`
+  if (mode === 'cardio') return formatCardioSet(s)
   if (mode === 'time') return fmtSec(s.sec) + (s.w > 0 ? ` · ${fmtNum(s.w)}` : '')
   // Bodyweight reads as what you did — "12", or "+10 × 12" once there is a belt involved —
   // rather than "0×12", which says a set was performed with no weight and means nothing.
@@ -110,7 +111,7 @@ export function setLabel(id, s, cfg) {
 // Default config for a freshly added exercise.
 export function defaultConfig(id, mode) {
   const m = mode || modeOf({ id })
-  if (m === 'cardio') return { sets: 1, min: 20, speed: 8 }
+  if (m === 'cardio') return { sets: 1, min: 20 }
   // Written only when it is true, so a barbell config is byte-for-byte what it was before
   // the flag existed and a plan file gains nothing it does not need.
   const bw = isBodyweightEq(id) ? { bodyweight: true } : {}
@@ -124,7 +125,7 @@ export function exLine(cfg, unit) {
   const n = cfg.sets || 1
   // Added weight reads as added: "+10 kg" on a dip belt, "60 kg" on a barbell.
   const load = cfg.weight ? ' · ' + (isBw(cfg) ? '+' : '') + fmtNum(cfg.weight) + ' ' + unit : ''
-  if (mode === 'cardio') return `${n} × ${cfg.min || 20} min @ ${fmtNum(cfg.speed || 8)} km/h`
+  if (mode === 'cardio') return `${n} × ${formatCardioSet(cfg, { pace: false, derived: false })}`
   if (mode === 'time') return `${n} × ${fmtSec(cfg.sec || 45)}${load}`
   // This is the line with room for it, so the split is spelled out: "3 × 16 · 8/side".
   const split = isPerSide(cfg) ? ' · ' + t('{0}/side', fmtNum(sideReps(cfg.reps))) : ''
@@ -144,7 +145,9 @@ export function lastEntryFor(S, exId) {
     // `target` is what the session prescribed; finished workouts carry it so labels and the
     // progression engine can read a session back the way it was logged. Older workouts have
     // none — modeOf() falls back to the body part for them, which is what they were.
-    if (en && en.sets.some(s => s.done)) return { d: S.workouts[i].d, sets: en.sets.filter(s => s.done), target: en.target || null }
+    // A warm-up (s.warm) is not what "last time" means: it would pre-fill the first working set
+    // with the bar's weight.
+    if (en && en.sets.some(s => s.done && !s.warm)) return { d: S.workouts[i].d, sets: en.sets.filter(s => s.done && !s.warm), target: en.target || null }
   }
   return null
 }
@@ -152,7 +155,7 @@ export function bestWeightFor(S, exId) {
   let best = 0
   S.workouts.forEach(w => w.entries.forEach(e => {
     if (e.id === exId) {
-      e.sets.forEach(s => { if (s.done && s.w > best) best = s.w })
+      e.sets.forEach(s => { if (s.done && !s.warm && s.w > best) best = s.w })
       if (e.topW && e.topW > best) best = e.topW
     }
   }))
@@ -180,7 +183,13 @@ export function buildSets(S, cfg) {
   if (mode === 'cardio') {
     for (let i = 0; i < n; i++) {
       const prev = prevAt(i)
-      sets.push({ min: prev ? prev.min : (cfg.min || 20), speed: prev ? prev.speed : (cfg.speed || 8), done: false })
+      // Distance carries over only when the last session recorded one; a set built from an
+      // old speed-only entry starts empty rather than seeding a distance nobody measured.
+      sets.push({
+        min: prev?.min ?? cfg.min ?? 20,
+        km: prev?.km ?? cfg.km ?? null,
+        done: false
+      })
     }
     return sets
   }
@@ -203,13 +212,47 @@ export function buildSets(S, cfg) {
   }
   return sets
 }
+// A window in days, counted back from now. 0 = everything, which is also what an empty
+// history means for every caller.
+export const inWindow = (w, days) =>
+  !days || (w.start || new Date(w.d).getTime()) > Date.now() - days * 86400000
+
 export function workoutVolume(w) {
   let v = 0
   // No special case for unilateral work: a per-side set logs its total, so both sides are
   // already in the rep count that arrives here.
-  w.entries.forEach(e => e.sets.forEach(s => { if (s.done) v += (s.w || 0) * (s.r || 0) }))
+  w.entries.forEach(e => e.sets.forEach(s => { if (s.done && !s.warm) v += (s.w || 0) * (s.r || 0) }))
   return v
 }
+/**
+ * The cardio in one workout.
+ *
+ * workoutVolume is weight × reps, so a 45-minute run contributes nothing to it and never
+ * will — multiplying a duration into a volume figure would make two incomparable things
+ * look like one. Cardio gets counted in its own units instead.
+ */
+export function workoutCardio(w) {
+  const sets = []
+  for (const e of (w && w.entries) || []) {
+    if (modeOf({ ...(e.target || {}), id: e.id }) !== 'cardio') continue
+    for (const s of e.sets || []) if (s.done) sets.push(s)
+  }
+  return sumCardio(sets)
+}
+
+/**
+ * Add a finished workout so the list stays in date order. A session logged afterwards for an
+ * earlier day goes where it belongs, not at the end, because readers take the last element to be
+ * the latest session.
+ */
+export function insertWorkout(workouts, w) {
+  const key = x => (x.d || '') + ':' + String(x.start || 0).padStart(15, '0')
+  let i = workouts.length
+  while (i > 0 && key(workouts[i - 1]) > key(w)) i--
+  workouts.splice(i, 0, w)
+  return workouts
+}
+
 export function setsDone(w) {
   let n = 0
   w.entries.forEach(e => e.sets.forEach(s => { if (s.done) n++ }))
@@ -221,6 +264,14 @@ export function setsDoneActive(A) {
   return n
 }
 export const lastBW = S => (S.bodyweight.length ? S.bodyweight[S.bodyweight.length - 1] : null)
+
+/** Convert a body-weight measurement only when its stored unit is known. */
+export function weightIn(entry, unit) {
+  const weight = Number(entry?.w)
+  if (!Number.isFinite(weight) || weight <= 0 || !['kg', 'lb'].includes(entry?.u) || !['kg', 'lb'].includes(unit)) return null
+  const converted = entry.u === unit ? weight : entry.u === 'lb' ? weight * 0.45359237 : weight / 0.45359237
+  return Math.round(converted * 10) / 10
+}
 
 // Group consecutive items sharing a superset id (sg) into "units" of indices.
 // items may be routine exercises ({sg}) or active-workout entries ({sg}).

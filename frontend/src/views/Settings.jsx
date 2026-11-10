@@ -3,15 +3,26 @@ import { useNavigate } from 'react-router-dom'
 import { useStore, DEF, hasData } from '../store/useStore.js'
 import { useUI } from '../store/useUI.js'
 import { ACCENTS, todayISO, localTZ } from '../lib/format.js'
-import { effortOf } from '../lib/history.js'
+import { effortOf, weightIn } from '../lib/history.js'
 import { api, webauthnOK, passkeyLogin, passkeyRegister, IS_ANDROID } from '../lib/api.js'
 import { pushSupported, enablePush, disablePush, sendTestPush } from '../lib/push.js'
 import { wakeLockSupported } from '../lib/wakelock.js'
-import { t, LANGS, INSTR_LANGS } from '../lib/i18n.js'
+import { t, LANGS, INSTR_LANGS, dateLocale } from '../lib/i18n.js'
+import { buildBackup, parseBackup, stateFromBackup, saveSafetyCopy, readSafetyCopy, clearSafetyCopy } from '../lib/backup.js'
 import { DEMO, REPO } from '../lib/demo.js'
 import { MOBILE, shareExport, syncReminder } from '../lib/mobile.js'
 import { loadStarterPlan, confirmSheet, importFromApp } from '../sheets.jsx'
+import { passwordSetupSheet, removePassword } from '../password-sheets.jsx'
+import { importActivities, undoActivityImport, lastActivityImport } from '../import-activity-sheet.jsx'
+import { coachWizardSheet, coachUndoAvailable, undoCoachPlan } from '../coach-sheets.jsx'
+import { trainerSheet } from '../trainer-sheets.jsx'
+import { creditsSheet } from '../credits-sheet.jsx'
+import { coachProfileOf, isCoachReady } from '../lib/coach-profile.js'
+import { healthSheet, healthSummary, importGlucoseSheet, undoImport, hasImported } from '../glucose-sheets.jsx'
+import { diabetesOn } from '../lib/diabetes.js'
+import { barcodeDiagnostics } from '../barcode-sheets.jsx'
 import Icon from '../components/Icon.jsx'
+import { flexOf } from '../lib/flex.js'
 import { Section, Row, SelectRow, Switch, Segmented, Button, TextField } from '../components/ui.jsx'
 
 export default function Settings() {
@@ -22,11 +33,13 @@ export default function Settings() {
   const toast = useUI(s => s.toast)
   const fileRef = useRef(null)
   const importRef = useRef(null)
+  const activityRef = useRef(null)
+  const glucoseRef = useRef(null)
   const wakeOK = wakeLockSupported()
 
   const doExport = async () => {
-    const json = JSON.stringify(S, null, 2)
-    const name = 'opengym-backup-' + todayISO() + '.json'
+    const json = JSON.stringify(buildBackup(S), null, 2)
+    const name = 'pass-backup-' + todayISO() + '.json'
     // WKWebView can't download blob URLs — the native build hands the file to the share sheet.
     if (MOBILE) {
       try { await shareExport(json, name); toast(t('Backup exported')) } catch (e) { /* share sheet dismissed */ }
@@ -36,18 +49,65 @@ export default function Settings() {
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); URL.revokeObjectURL(a.href)
     toast(t('Backup exported'))
   }
+  const backupError = r => ({
+    not_backup: t('this isn’t a Pass backup'),
+    too_big: t('the file is too large'),
+    bad_json: t('the file is not valid JSON'),
+    newer: t('this backup is from a newer version of Pass'),
+    bad_shape: t('the file has a damaged section: {0}', r.detail)
+  }[r.error] || r.error)
+  const [safety, setSafety] = useState(() => readSafetyCopy(localStorage))
   const doImport = ev => {
     const f = ev.target.files[0]; if (!f) return
     const rd = new FileReader()
     rd.onload = () => {
-      try {
-        const data = JSON.parse(rd.result)
-        if (!data.workouts || !data.routines) throw new Error('not an openGym backup')
-        confirmSheet({ title: t('Import backup?'), message: t('This replaces all current data with the backup file.'), confirmText: t('Import'), danger: true, onConfirm: () => { replaceState(Object.assign(JSON.parse(JSON.stringify(DEF)), data), true); toast(t('Backup imported')) } })
-      } catch (e) { toast(t('Import failed: {0}', e.message)) }
+      const parsed = parseBackup(String(rd.result), DEF)
+      if (!parsed.ok) { toast(t('Import failed: {0}', backupError(parsed))); return }
+      const sm = parsed.summary
+      confirmSheet({
+        title: t('Import backup?'),
+        message: t('This replaces all current data with the backup file.') + ' ' +
+          t('The file holds {0} workouts, {1} meals and {2} weigh-ins.', sm.workouts, sm.meals, sm.weighIns) + ' ' +
+          t('Your current data is kept for 7 days so you can undo.'),
+        confirmText: t('Import'), danger: true,
+        onConfirm: () => {
+          const kept = saveSafetyCopy(S, localStorage)
+          replaceState(stateFromBackup(parsed, DEF), true)
+          setSafety(kept ? readSafetyCopy(localStorage) : null)
+          if (!kept) toast(t('Imported — but there was no room to keep your old data for undo.'))
+        }
+      })
     }
     rd.readAsText(f)
   }
+  const undoBackupImport = () => {
+    const c = readSafetyCopy(localStorage); if (!c) { setSafety(null); return }
+    confirmSheet({
+      title: t('Undo the backup import?'),
+      message: t('Brings back what you had before the import on {0}. What you have now is replaced.', new Date(c.at).toLocaleDateString(dateLocale())),
+      confirmText: t('Undo'), danger: true,
+      onConfirm: () => { replaceState(stateFromBackup({ state: c.state }, DEF), true); clearSafetyCopy(localStorage); setSafety(null); toast(t('Import undone')) }
+    })
+  }
+  // Copying the id is the whole point of showing it: it goes into ADMIN_UIDS in .env, and
+  // nobody retypes 16 characters of base64 correctly on a phone.
+  const copyId = async (id, say) => {
+    try { await navigator.clipboard.writeText(id); say(t('Profile id copied')) }
+    catch (e) { say(t('Could not copy — the id is {0}', id)) }
+  }
+
+  // Glucose and insulin out of a device export. The sheet does the deciding — this only
+  // gets the text off disk — because the confirmation is the whole point of that flow.
+  const doGlucoseImport = ev => {
+    const f = ev.target.files[0]
+    ev.target.value = ''                  // so picking the same file twice still fires
+    if (!f) return
+    const rd = new FileReader()
+    rd.onload = () => importGlucoseSheet(String(rd.result))
+    rd.onerror = () => toast(t('Could not read that file'))
+    rd.readAsText(f)
+  }
+
   const signInHere = async () => {
     try { const u = await passkeyLogin(); setUser(u); await pullState(); toast(t('Welcome back, {0}', u.name)) }
     catch (e) { if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') toast(e.message || t('Sign-in failed')) }
@@ -76,16 +136,26 @@ export default function Settings() {
     <Section title={MOBILE ? t('Your data') : DEMO ? t('Demo') : t('Account')}>
       {MOBILE ? <>
         <Row icon="lock" iconTint="var(--acc)" title={t('All data stays on this phone')} subtitle={t('No account, no cloud — back it up anytime with Export below.')} />
-        <Row icon="rocket" iconTint="var(--indigo)" title={t('Self-host openGym')} subtitle={t('Passkey sign-in, sync across your devices, your own data.')} accessory="chevron"
+        <Row icon="rocket" iconTint="var(--indigo)" title={t('Self-host Pass')} subtitle={t('Passkey sign-in, sync across your devices, your own data.')} accessory="chevron"
           onClick={() => window.open(REPO, '_blank', 'noopener')} />
       </> : DEMO ? <>
         <Row icon="sparkles" iconTint="var(--acc)" title={t('You’re in the demo')} subtitle={t('Example data, stored only in this browser — change anything you like.')} />
         <Row icon="reset" iconTint="var(--blue)" title={t('Reset demo data')} accessory="chevron"
           onClick={() => confirmSheet({ title: t('Reset demo data?'), message: t('Puts the example plan, workouts and weigh-ins back the way they started.'), confirmText: t('Reset'), onConfirm: () => { resetDemo(); nav('/home'); toast(t('Demo data reset')) } })} />
-        <Row icon="rocket" iconTint="var(--indigo)" title={t('Self-host openGym')} subtitle={t('Passkey sign-in, sync across your devices, your own data.')} accessory="chevron"
+        <Row icon="rocket" iconTint="var(--indigo)" title={t('Self-host Pass')} subtitle={t('Passkey sign-in, sync across your devices, your own data.')} accessory="chevron"
           onClick={() => window.open(REPO, '_blank', 'noopener')} />
       </> : user ? <>
-        <Row icon="personCircle" iconTint="var(--grey)" title={user.name} subtitle={t('Signed in with passkey — data syncs to this profile.')} />
+        {/* The user id is here because two places tell you to come and get it — .env.example
+            for ADMIN_UIDS, and the self-hosting guide — and until now the row showed only a
+            name, sending people to read db.json over SSH for a string the app already knew. */}
+        <Row icon="personCircle" iconTint="var(--grey)" title={user.name}
+          subtitle={t('Signed in with passkey. Profile id: {0}', user.id)}
+          accessory="chevron" onClick={() => copyId(user.id, toast)} />
+        <Row icon="lock" iconTint="var(--blue)" title={user.username ? t('Password sign-in') : t('Sign in with a password')}
+          subtitle={user.username ? t('Username: {0}', user.username) : t('Lets you sign in on other devices.')}
+          accessory="chevron" onClick={passwordSetupSheet} />
+        {user.username && <Row icon="trash" iconTint="var(--orange)" title={t('Remove password')}
+          onClick={() => confirmSheet({ title: t('Remove password?'), message: t('You can still sign in with your passkey. Other devices signed in with the password are signed out.'), confirmText: t('Remove'), danger: true, onConfirm: removePassword })} />}
         {user.admin && <Row icon="wrench" iconTint="var(--indigo)" title={t('Admin dashboard')} accessory="chevron" onClick={() => nav('/admin')} />}
         <Row icon="signOut" iconTint="var(--red)" title={t('Sign out')} danger onClick={() => confirmSheet({ title: t('Sign out?'), message: t('Your data is synced to your profile first, then cleared from this device.'), confirmText: t('Sign out'), danger: true, onConfirm: () => { signOut(); nav('/home') } })} />
         <Row icon="shield" iconTint="var(--red)" title={t('Sign out everywhere')} subtitle={t('Ends this profile’s sessions on all your devices.')} danger onClick={signOutEverywhere} />
@@ -98,8 +168,65 @@ export default function Settings() {
     </Section>
     {!user && !DEMO && !MOBILE && <p className="sect-f" style={{ marginTop: -18, marginBottom: 22 }}>{t('Guest mode — data lives only in this browser.')}</p>}
 
+    {/* ---------- training week ---------- */}
+    <Section title={t('Training week')} footer={t('Your routines stay as they are. With a flexible week the app drops the fixed days: it shows the next routine in turn and counts sessions, so a night shift never counts as a missed day.')}>
+      <Row icon="calendar" iconTint="var(--blue)" title={t('Flexible week')} subtitle={t('For shift work: aim for a number of sessions, not fixed days.')}>
+        <Switch checked={flexOf(S).on} onChange={v => update(s => { s.flex = { on: v, perWeek: flexOf(s).perWeek } })} />
+      </Row>
+      {flexOf(S).on && <SelectRow icon="target" iconTint="var(--green)" title={t('Sessions per week')}
+        value={flexOf(S).perWeek} onChange={v => update(s => { s.flex = { on: true, perWeek: v } })}
+        options={[1, 2, 3, 4, 5, 6, 7].map(v => ({ value: v, label: String(v) }))} />}
+    </Section>
+
+    {/* ---------- AI coach ---------- */}
+    <Section title={t('AI coach')} footer={t('Your answers stay on this device. Nothing is sent anywhere unless you paste the prompt into a chat yourself. The trainer works out its findings on this device and, only if the server has an AI key and you ask for a written check-in, sends just those findings.')}>
+      <Row icon="chartLine" iconTint="var(--acc)" accessory="chevron"
+        title={t('Your trainer')}
+        subtitle={t('What your log says, and the studies behind it')}
+        onClick={trainerSheet} />
+      <Row icon="sparkles" iconTint="var(--acc)" accessory="chevron"
+        title={isCoachReady(coachProfileOf(S)) ? t('Training profile') : t('Set up my training profile')}
+        subtitle={isCoachReady(coachProfileOf(S)) ? t('Age, goal, equipment and limitations') : null}
+        onClick={coachWizardSheet} />
+      {coachUndoAvailable(S) && <Row icon="reset" iconTint="var(--blue)" title={t('Undo the AI plan')}
+        subtitle={t('Puts back the routines you had before')} accessory="chevron"
+        onClick={() => confirmSheet({
+          title: t('Undo the AI plan?'),
+          message: t('Your previous routines and weekly schedule come back. The AI routines are removed.'),
+          confirmText: t('Undo'),
+          onConfirm: undoCoachPlan
+        })} />}
+    </Section>
+
+    {/* ---------- diabetes ---------- */}
+    <Section title={t('Diabetes')}
+      footer={diabetesOn(S)
+        ? t('A logbook, not a calculator. Pass never works out a dose, and nothing in it is medical advice.')
+        : null}>
+      <Row icon="heart" iconTint="var(--red)" accessory="chevron"
+        title={diabetesOn(S) ? t('Diabetes mode') : t('Turn on diabetes mode')}
+        subtitle={diabetesOn(S) ? healthSummary(S) : t('Glucose log, insulin log and a report for appointments')}
+        onClick={healthSheet} />
+      {diabetesOn(S) && <>
+        <Row icon="upload" iconTint="var(--blue)" title={t('Import from meter or pump')}
+          subtitle={t('A CSV from CareLink, Libre or your meter — you confirm what it found before anything is saved.')}
+          accessory="chevron" onClick={() => glucoseRef.current.click()} />
+        {hasImported(S) && <Row icon="reset" iconTint="var(--orange)" title={t('Undo the last import')}
+          subtitle={t('Removes everything that came from a file. Hand-typed entries stay.')} accessory="chevron"
+          onClick={() => confirmSheet({
+            title: t('Undo the import?'),
+            message: t('Every reading and dose that came from a file is removed. Anything you typed yourself is left alone.'),
+            confirmText: t('Undo'),
+            onConfirm: undoImport
+          })} />}
+        <Row icon="clipboard" iconTint="var(--indigo)" title={t('Report for your care team')}
+          subtitle={t('Time in range, insulin and carbs — printed or saved as a PDF')}
+          accessory="chevron" onClick={() => nav('/report')} />
+      </>}
+    </Section>
+
     {/* ---------- general ---------- */}
-    <Section title={t('General')} footer={t('Note: switching units only changes the label — logged numbers are not converted.')}>
+    <Section title={t('General')} footer={t('Training weights already logged are not converted. Body weight and its target keep their meaning when the unit changes.')}>
       <SelectRow
         icon="globe" iconTint="var(--blue)" title={t('Language')}
         value={S.lang || 'en'} onChange={v => update(s => { s.lang = v })}
@@ -111,7 +238,14 @@ export default function Settings() {
       <Row icon="scale" iconTint="var(--teal)" title={t('Weight unit')}>
         <Segmented className="seg-inline"
           options={[{ value: 'kg', label: 'kg' }, { value: 'lb', label: 'lb' }]}
-          value={S.unit} onChange={v => update(s => { s.unit = v })} />
+          value={S.unit} onChange={v => update(s => {
+            for (const entry of s.bodyweight) if (!entry.u) entry.u = s.unit
+            for (const workout of s.workouts) if (workout.bw && !workout.bwu) workout.bwu = s.unit
+            if (s.active?.bw && !s.active.bwu) s.active.bwu = s.unit
+            if (s.targetW != null) s.targetW = weightIn({ w: s.targetW, u: s.targetWU || s.unit }, v) ?? s.targetW
+            s.targetWU = s.targetW == null ? null : v
+            s.unit = v
+          })} />
       </Row>
     </Section>
 
@@ -152,6 +286,14 @@ export default function Settings() {
           onChange={v => update(s => { s.theme = v })}
         />
       </Row>
+      <Row icon="sparkles" iconTint="var(--blue)" title={t('Glass')} subtitle={t('How see-through bars and sheets are')}>
+        <Segmented
+          className="seg-inline"
+          options={[{ value: 'frosted', label: t('Frosted') }, { value: 'clear', label: t('Clear') }]}
+          value={S.glass === 'clear' ? 'clear' : 'frosted'}
+          onChange={v => update(s => { s.glass = v })}
+        />
+      </Row>
       {/* Purely how the muscle map is drawn — nothing else in the app reads this. */}
       <Row icon="figureStrength" iconTint="var(--teal)" title={t('Body diagram')}>
         <Segmented
@@ -178,11 +320,25 @@ export default function Settings() {
       <Row icon="shuffle" iconTint="var(--teal)" title={t('Import from another app')}
         subtitle={t('FitNotes, Strong, Hevy — or body weight from Apple Health')}
         accessory="chevron" onClick={() => importRef.current.click()} />
+      <Row icon="shuffle" iconTint="var(--teal)" title={t('Import activities')}
+        subtitle={t('Apple Health, Garmin Connect, TCX or GPX')}
+        accessory="chevron" onClick={() => activityRef.current.click()} />
+      {lastActivityImport(S) && <Row icon="reset" iconTint="var(--orange)" title={t('Undo the last activity import')}
+        subtitle={t('Removes the activities from the last file you imported.')} accessory="chevron"
+        onClick={() => confirmSheet({ title: t('Undo the last activity import'), message: t('Removes the activities from the last file you imported.'), confirmText: t('Remove'), danger: true, onConfirm: undoActivityImport })} />}
+      <Row icon="barcode" iconTint="var(--teal)" title={t('Can this phone scan?')}
+        subtitle={t('Checks the camera and the barcode decoder on this device')}
+        accessory="chevron" onClick={barcodeDiagnostics} />
       <Row icon="upload" iconTint="var(--blue)" title={t('Import backup')} accessory="chevron" onClick={() => fileRef.current.click()} />
       <Row icon="download" iconTint="var(--blue)" title={t('Export backup (JSON)')} accessory="chevron" onClick={doExport} />
+      {safety && <Row icon="reset" iconTint="var(--orange)" title={t('Undo the backup import')}
+        subtitle={t('Brings back your data from before the import. Kept for 7 days.')} accessory="chevron" onClick={undoBackupImport} />}
       <Row icon="trash" iconTint="var(--red)" title={t('Reset everything')} danger onClick={() => confirmSheet({ title: t('Reset everything?'), message: t('Deletes your plan, workouts and body weight on this device. This cannot be undone.'), confirmText: t('Delete everything'), danger: true, onConfirm: () => { replaceState(JSON.parse(JSON.stringify(DEF)), true); nav('/home'); toast(t('All data reset')) } })} />
     </Section>
     <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={doImport} />
+    <input ref={glucoseRef} type="file" data-import="glucose" accept=".csv,text/csv,text/plain" style={{ display: 'none' }} onChange={doGlucoseImport} />
+    <input ref={activityRef} type="file" multiple accept=".zip,.xml,.csv,.json,.tcx,.gpx"
+      style={{ display: 'none' }} onChange={ev => { importActivities([...ev.target.files]); ev.target.value = '' }} />
     {/* Reset after reading so picking the same file twice still fires onChange. */}
     <input ref={importRef} type="file" accept=".csv,.xml,text/csv,text/xml" style={{ display: 'none' }}
       onChange={ev => { const f = ev.target.files[0]; if (f) importFromApp(f); ev.target.value = '' }} />
@@ -191,12 +347,13 @@ export default function Settings() {
     {!MOBILE && <Section title={t('Tip')}>
       <Row icon="lightbulb" iconTint="var(--yellow)"
         title={IS_ANDROID ? t('In Chrome: ⋮ menu → Add to Home screen') : t('In Safari: Share → Add to Home Screen')}
-        subtitle={t('to install openGym as a full-screen app.') + ' ' + (user ? t('Your data syncs with your profile — sign in anywhere to see it.') : t('Guest data stays on this device — export a backup now and then!'))} />
+        subtitle={t('to install Pass as a full-screen app.') + ' ' + (user ? t('Your data syncs with your profile — sign in anywhere to see it.') : t('Guest data stays on this device — export a backup now and then!'))} />
     </Section>}
 
     <div className="dim small" style={{ textAlign: 'center', marginTop: 4, lineHeight: 1.6 }}>
-      openGym · {t('free & open source (AGPL v3)')}<br />
-      <a href="https://github.com/DuarteSantos8/openGym" target="_blank" rel="noopener">source code</a> · exercise data: hasaneyldrm/exercises-dataset (CC)
+      Pass · <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">{t('free & open source (AGPL v3)')}</a><br />
+      <a href={REPO} target="_blank" rel="noopener">{t('source code')}</a> · <a href="https://github.com/DuarteSantos8/openGym" target="_blank" rel="noopener">{t('based on openGym')}</a><br />
+      <a href="#credits" onClick={e => { e.preventDefault(); creditsSheet() }}>{t('credits and licences')}</a>
     </div>
   </div>
 }
@@ -308,7 +465,7 @@ function PushCard({ S, update, toast }) {
           (S.reminder?.tz ? ' ' + t('Timezone: {0} (auto-detected, updates if you travel).', S.reminder.tz) : '')
         : null}
     >
-      <Row icon="bell" iconTint="var(--red)" title={t('Push notifications')} subtitle={t('Rest-timer alerts, even if openGym is closed.')}>
+      <Row icon="bell" iconTint="var(--red)" title={t('Push notifications')} subtitle={t('Rest-timer alerts, even if Pass is closed.')}>
         <Switch checked={on} disabled={busy} onChange={toggle} />
       </Row>
       {on && (

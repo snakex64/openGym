@@ -1,5 +1,493 @@
 # Changelog
 
+## A level test for the trainer
+
+"Take the level test" (in the trainer, and under Experience in the AI plan wizard): two questions about training
+history, three optional bodyweight checks (push-ups, squats in 60 s, plank) and three optional submaximal lifts
+(one set of 8 with about 2 reps left; barbell, dumbbell or machine). It gives a level — new, a year or two in, or training
+for years — with a confidence that says how much it rests on, a strongest and weakest area, and suggested first
+weights a little under what was tested, which are used only where no working weight exists. Until four workouts are
+logged the trainer used to say nothing; it now gives these as findings (marked as rule of thumb) that the written
+check-in can phrase, and the plan prompt includes the result. Adults only for the physical tests, skipped for
+anyone who noted a limitation, with stop-if-it-hurts guidance throughout. The thresholds are rules of thumb, not
+norms from a study, and are labelled that way.
+
+## Log missed meals and workouts for earlier days
+
+Food: the "Log a meal" and "My meals" buttons now show on every day you browse to (they used to appear only on today),
+log onto the day on screen, and the meal form has Day and Time fields so a meal can be moved to another day. On
+a past day the time follows the kind of meal (breakfast 08:00 … dinner 18:00) so the day reads in order. Workout and
+Home: "Log a workout you missed" opens your routine on an earlier day; you tick off what you did, say how long
+it lasted, and it is saved on that day (no weigh-in, no clock, no rest timer). Sessions are inserted in date order.
+
+## Speed Insights on the Vercel deployment
+
+The Vercel build now loads Vercel Speed Insights, which reports real page-load timings (Core Web Vitals) from the
+devices using the app. It is anonymous, sets no cookies and sends no app data. It only exists in the Vercel build
+(`VITE_SPEED_INSIGHTS=1` in `vercel.json`); self-hosted, demo and mobile builds contain none of it.
+
+## Password sign-in as a second way in
+
+Settings → Account → "Sign in with a password": choose a username and a password (at least 10 characters) on an
+account that already has a passkey, and sign in with them on any other device from the login screen. Setting,
+changing or removing the password is confirmed with the account's passkey first, so a stolen session cannot plant
+one. Five wrong guesses lock password sign-in for 15 minutes (the passkey still works). There is no e-mail reset:
+forget it and sign in with the passkey to set a new one, or ask the admin, who can reset it from the user's page in
+the Admin dashboard (a one-time password is shown once) or remove it. Passwords are stored as scrypt hashes and are
+never in backups or any API response.
+
+## Import activities from Apple Health and Garmin
+
+Settings → Data → "Import activities": pick an Apple Health `export.zip` (or `export.xml`), a Garmin Connect
+Activities CSV or account-data export, or TCX / GPX files. Each walk, run, ride, swim or hike becomes its own
+session with minutes, distance and average heart rate; nothing already logged (or overlapping a session you logged)
+is added twice, and "Undo the last activity import" removes the last batch. Large Apple exports are read in
+pieces, so the whole file is never held in memory. Imported sessions count toward the weekly aim and the streak
+like any other, and feed the energy estimate in Food.
+
+## Energy from activity, shown in Food
+
+Food now shows an "Activity" block for the day: each logged session or activity with an estimated energy use
+(MET values from the Compendium of Physical Activities, minus resting energy) and a total. When your calorie
+target is a personal one, it also says how much extra you could eat to hold that target. It is only a suggestion:
+targets never change by themselves, and without a logged body weight no number is shown.
+
+## Log walks, runs and other activities
+
+"Log an activity" on Home and in Start: a walk, a run, cycling, swimming, a hike or anything else, with minutes and
+optionally distance and heart rate, saved as a session without a live workout or a weigh-in. The same
+activities can be added inside a lifting session from the exercise picker. A cardio plan now asks for minutes and an
+optional distance (it used to store a speed that nothing used), and the per-exercise cardio chart reads the speed
+from minutes and distance. Every logged session, walks included, still counts toward the weekly aim and the streak.
+
+## Backups
+
+Export and import are stricter and safer: the file says what it holds, a damaged or foreign file is refused with
+the reason, files from earlier versions still work, and an import keeps your old data for 7 days with an undo
+in Settings. Admin → Backup downloads everyone's data (or one person's, in the same format), and the server
+keeps a nightly copy for 14 days. No passkeys, secrets or invitation codes are ever in a copy.
+
+## Log a meal by photo
+
+Meal form → "Log by photo": take a picture of the plate and an AI proposes the dishes and their weights.
+Each dish is looked up in the food database and uses its values when it matches; the rest keep the
+AI's estimate, marked as such. You check and edit every row before it is saved. The photo is shrunk on
+the phone, used once, never stored, and costs two of the day's AI calls. Not offered while a health flag
+or safety review is open (unless clinician mode is on).
+
+## A simpler tab bar
+
+The bottom bar now has five places: Home, Plan, Start, Food and Menu. Stats, History, Exercises and
+Settings (and Admin for admins) are in the Menu, which lights up while you are on one of them.
+
+## Credits and licences in the app
+
+Settings now has a "credits and licences" page: the Gym visual credit line, Livsmedelsverket (CC BY 4.0),
+Open Food Facts, the exercise dataset, MuscleMap and a link to the licence notices of every library in
+the web app (generated at build time). The "source code" link pointed at an old branch and now points
+at the repository. Footer text no longer calls the exercise media "CC".
+
+## Exercise instructions in German and Portuguese
+
+All 1,324 exercises now have their how-to steps in German and Portuguese too, so every language in the
+app shows instructions in its own language.
+
+## Exercise instructions in Swedish
+
+The how-to steps for all 1,324 exercises are now shown in Swedish (they stayed in English before).
+
+## Every language is complete again
+
+Eleven of the twelve languages were missing about 760 strings added since the trainer, food and week
+features (everything fell back to English mid-screen). They are now translated, a test keeps the
+languages in step, and the app starts in the browser's language when none has been chosen.
+
+## The app is now called Pass
+
+Renamed from Dagsnav: app name, home-screen label, page title, passkey prompt (`RP_NAME` default) and
+texts in every language. The address and `RP_ID` are unchanged, so existing sign-ins keep working.
+
+## Unreleased
+
+The app grows a second half. Everything until now was about training; this release adds what
+you eat, and — for anyone who needs it — what the glucose meter said afterwards. Plus a coach
+that writes the training plan, a new name to cover all of it, and one secret that should never
+have been in the repository taken back out.
+
+### Measuring the AI, and an exact daily cap
+
+- 📊 **How often the models' answers pass their checks.** Every AI answer is validated before it is
+  shown, and a failure costs a call and gives fixed text instead. The server now counts the outcome —
+  accepted first try, accepted after the repair round, rejected twice, outside the log's scope, kept
+  local, provider error — and the *kind* of rule an answer broke ("number not in the findings"). Counts
+  only: never the answer, the question or who asked. Admin shows the last 30 days and says when more
+  than one answer in five fails twice.
+- 🔢 **The daily AI cap is exact on Vercel.** It used to be a Map in the process, which on serverless
+  hosting meant a cap per instance. The count is now a small document per day in the store, reserved
+  with a precondition, and shared by the AI features and the barcode lookup. If the store is too busy
+  to settle, the call is refused rather than let through.
+- 🩺 **A prompt for clinicians.** On a clinician instance the trainer's system prompt no longer ends
+  every mention of pain or illness with "talk to a clinician". It writes at a professional level, says
+  what the log can and cannot show, and carries on with what the findings support. Only that one line
+  differs; the rules about facts, numbers and citations are the same text, and a test pins that.
+
+### A trainer that looks at food, the week and the conversation
+
+- 🥩 **Food and weight in the findings.** Once enough is logged (five whole days, so a forgotten
+  lunch is not read as a diet), the trainer compares protein per kg of body weight with the point
+  where extra protein stopped adding lean mass in a meta-analysis, and tells a muscle-goal lifter whose
+  weight is falling that building muscle usually takes eating enough. Both say how firm their basis is;
+  neither is raised for a minor, for an eating-disorder, kidney or any other nutrition-safety flag, or
+  (outside a clinician instance) for a medical condition on the profile.
+- 🗓️ **The week at a glance on Home.** Sessions against the aim, working sets against the week before,
+  new personal bests and, when logged, protein and the change in weight. Worked out when the tab opens,
+  since push notifications are not available on the hosting this runs on. Monday and Tuesday show last
+  week; the rest of the week shows the week so far.
+- 💬 **Follow-up questions.** The written check-in is now a short conversation: the last three turns go
+  along as context so "and legs?" means something. They can only explain what a question refers to — the
+  new answer is checked against the findings exactly as before, so an earlier answer cannot widen what
+  it may say. A medical word in any earlier question keeps the model out of the whole chat.
+- 📚 **Four more sources**, each looked up in PubMed: Morton et al. 2018 (protein), Helms et al. 2014
+  (protein while dieting), Iraki et al. 2019 (off-season energy surplus) and Bell et al. 2023 (a
+  consensus definition of deloading, cited next to the existing survey).
+
+### Pasting a plan from a phone
+
+- 📋 **A plan that went through a phone now reads.** Copying a reply through a phone or a chat app
+  turns the straight quotes into typographic ones (`“ ”`), and a JSON parser then sees no strings at
+  all. The paste is repaired before it is read: typographic quotes become real ones (or escaped ones
+  when they sit inside a value), non-breaking spaces and trailing commas are cleaned up, and valid
+  JSON is left exactly as it was. Applies to the AI coach's paste box and to plan files.
+
+### A trainer that plans ahead
+
+- 📋 **Next session, in numbers.** The trainer sheet now shows the coming session exercise by exercise:
+  weight, reps and sets from the same progression rule the workout pre-fills, with the reason beside
+  each. When the trainer's own findings call for a lighter week (`fatigue`, `block_long`) there is a
+  lighter version — half the sets at the weight already handled, three reps in reserve — that starts a
+  real workout, judged against what it asked for rather than as a string of misses.
+- 🔁 **Program review every four weeks.** From the log alone (no model): short of sets for a muscle,
+  or a lift flat for six weeks or more, which can be swapped for a close relative (same movement, same
+  muscle, equipment you have). Nothing changes until you apply it; each change can be undone, and a
+  change made since the proposal is never overwritten.
+- 🌗 **Flexible week for shift work.** Settings → Training week: aim for a number of sessions instead of
+  fixed days. Home shows the next routine in the rotation and the count, a skipped day never skips a
+  routine, and the trainer measures adherence against the number you chose. The routines and the week
+  are untouched, so switching it off goes straight back.
+
+### A look that follows iOS 26
+
+- 🪟 **Liquid Glass, as far as a web app can follow it.** The tab bar is now a floating glass capsule
+  that folds to icons while you scroll down and opens on the first scroll up; partial sheets float
+  inset from the screen edges with rounded corners and, once they fill most of the screen, anchor
+  to the edges on an opaque background; buttons, segmented controls and tags are capsules; the
+  round header buttons are glass. Content stays opaque: glass is only for the layer that floats
+  over it. A soft blur-and-fade replaces the hard edge where content slides under the status bar
+  and the tab bar. Based on Apple's WWDC25 session 323.
+- 🎚️ **Glass: Frosted or Clear** (Settings → Appearance). Frosted, the default, diffuses more and
+  is easier to read; Clear lets more of the page through. The system wins over both:
+  `prefers-contrast: more` and `prefers-reduced-transparency` switch glass off, and a browser
+  without backdrop blur gets an almost opaque panel instead of a see-through one.
+- ♿ **Contrast measured, and fixed.** Several text colours failed WCAG AA (4.5:1): secondary text
+  in light mode was 3.3:1, tertiary text 1.7–2.6:1, and the accent as text on white 2.2:1 (yellow
+  1.5:1). Text now uses text-safe tokens (`--label-t`, `--acc-t`, `--green-t` …) and the
+  stylesheet is tested against AA for every theme × accent. Light-mode yellow text is a dark
+  olive as a result; that is the price of 4.5:1 on white.
+- 👆 **44-point targets.** Header buttons grew from 36 to 44 px; dense controls (segments, switches,
+  accent swatches, the help button) keep their size but are tappable at 44 px, checked by probing
+  taps on the real screens. Inline text links in sentences are exempt. Pinch-zoom is allowed again
+  (the viewport used to forbid it), and the week arrows' screen-reader labels are translated.
+- Not done, on purpose or because the web can't: real refraction and lensing (Safari has no
+  backdrop-filter shaders), SF Symbols and Dynamic Type, haptics. The `prefers-reduced-transparency`
+  rule follows the standard but could not be exercised in the test browser. iOS 27's refinements
+  (less default transparency, a system transparency slider) are known here only from press
+  coverage, not from Apple's documentation, so the Frosted default follows the direction rather
+  than a specification.
+
+### A meal plan from the meals you already eat
+
+- 🍽️ **Meal plan** (Food screen): a week built from your **saved meals**, each day in portion sizes
+  (×0.5 to ×2) that land near your daily targets. Energy is held to the day's target and protein
+  and fibre to their floors; saturated fat and salt only count against it when over. On a sample
+  set of nine meals, every day landed within about 4% of the energy target.
+- **No model, no key, no invented numbers.** It is a search over your own foods and the targets
+  the Food screen already shows. A meal with a food that is missing energy, protein, carbohydrate
+  or fat values is left out and counted, because a total with a gap in it is a lower bound, not a
+  figure.
+- **Variety is a cost, not a rule.** The same meal is pushed away from the same slot for three
+  days and from repeating across the week; with few saved meals it repeats and says so. A week
+  also says plainly when your meals can't get close to your targets.
+- **One tap to log.** Today's planned meals sit on the Food screen; logging one writes the grams
+  actually planned, once. The plan stores references, so editing a saved meal updates the week.
+  A day can be shuffled until something on it has been logged. There is a shopping list in
+  grams for the week.
+- 🛑 **Who doesn't get one.** The same bar as the nutrition assistant: no schedule for a current
+  medical condition, medication, diabetes mode, a weight-loss drug, a flagged or unanswered safety
+  answer, an expired review, a paused target, or anyone under 18. The screen says why and points
+  at a dietitian or the care team. A schedule that fixes carbohydrate per meal is too close to
+  dosing to generate for those accounts.
+- Swedish translation included.
+
+### A trainer that reads your log
+
+- 🧠 **Your trainer** (Home card, and in Settings) reads the last four weeks of your own training
+  and says what it found: muscles getting too few weekly sets for your goal, a muscle trained once
+  a week, a lift that has levelled off or is falling, several lifts falling together with harder
+  sets or short sleep (a lighter week is worth considering), a long block with no lighter week,
+  fewer sessions than planned, sets that all end far from failure, and — for an adult who set
+  fat loss as the goal — weight falling faster than the research supports.
+- **Rules, not a model, do the arithmetic.** Every number comes from the log by fixed, tested
+  rules. Under four finished workouts it says it doesn't have enough yet rather than guessing.
+  Warm-up sets are left out, and a supporting muscle counts 0.4 of a set.
+- 📚 **Every finding says how firm its basis is, and cites the study.** *Study finding*
+  (restates a paper), *Common practice* (what lifters report doing — the cited survey does not
+  show that it works) or *Rule of thumb* (this app's own threshold). Seven sources, each looked
+  up in PubMed; the sheet shows what each found and what it can't show, with DOI and PubMed links.
+  The abs are judged by the same range but labelled as an extrapolation and never urgent, because
+  the volume meta-analysis is on limb muscles.
+- 🔧 **It can change the plan, a little, and you can undo it.** Where a muscle is short on sets and
+  a routine already trains it, one tap adds the sets (never more than six on an exercise, never
+  over an edit made since). Undo restores only what it changed. A lighter week is advice, not a
+  switch.
+- ✍️ **Optional written check-in and questions** — with an AI key on the server, a model rewords
+  the findings. It cannot add figures: the server rejects any answer containing a number the
+  findings don't hold (a percentage must match a percentage), a citation the findings don't back,
+  or anything link-shaped, retries once, and otherwise the app shows its own fixed text.
+  The record that is sent is shown first ("What gets sent"): findings only — no workouts,
+  weights, notes or profile text. A minor, an account with Health mode on, or a medical word in the
+  profile or the question never reaches the model; the server decides this from the stored
+  profile, not from what the browser claims.
+- 🔥 **Warm-up sets.** Tap a set's number in a workout to mark it as a warm-up (it turns into an
+  orange **W**; tap again to undo). A warm-up stays in the log but is not work: it no longer
+  counts toward muscle volume, tonnage, estimated 1RM, effort ratings or "last time", and a light
+  set under the target reps can no longer read as a missed session and hold your weight back.
+  Hevy warm-ups are marked automatically on import instead of being taken as working sets.
+  (The app had no warm-up sets before this; a Hevy import used to add them as ordinary sets.)
+- Swedish translation included; other languages fall back to English for the new text.
+
+### Steps, from whichever watch you wear
+
+- 👟 **Daily step counts import from an Apple Health export or a steps CSV**, Garmin Connect's
+  included. One figure per day is kept: steps by the hour would be a quarter of a million
+  records to render a daily average, which is a poor trade.
+- **The phone and the watch are not added together — and neither is discarded.** Both count
+  the same walk, and Health's export contains both sets of records, so summing them reports
+  roughly twice the steps anybody took. The reconciliation runs hour by hour: each device is
+  counted for the hours it was the one carrying, and the larger figure wins the hours both
+  were. A shift worked with the phone alone and an evening walk with the watch on both land,
+  which a day-level rule would not manage — it would hand the day to one device and take the
+  other's hours down with it. The import says when more than one device contributed.
+- 📊 **A Steps card in Stats**: daily average, best day, and a week-by-week average. The
+  average is over days *recorded*, not days in the window — a watch left on the charger is not
+  a day spent sitting still, and counting it as zero would describe the device rather than
+  the person. The number of days it rests on is always beside it.
+- 📦 **One Apple Health export, one import.** The file holds workouts, steps and weigh-ins
+  together; the importer used to take whichever it noticed first and silently leave the rest,
+  so the same few hundred megabytes had to be fed in more than once. All three now land in a
+  single pass, and the confirmation screen counts each of them before anything is written.
+- Translated into all 13 UI languages.
+
+### Sleep, from the same export
+
+- 😴 **Nightly sleep duration imports from an Apple Health export.** Only time actually asleep
+  counts — time in bed before drifting off and time spent awake in the night are read and left
+  out. A night is attributed to the evening it began: a bedtime just before midnight and a
+  wake-up just after both land under the same date, rather than splitting across two.
+- **Overlapping sources are unioned, not summed.** A phone, a watch and a sleep app can all log
+  the same night, and unlike steps this is a duration — adding two overlapping recordings
+  together overstates the night directly rather than merely doubling a count. Every asleep
+  interval, from any source, is merged into non-overlapping spans first, and the spans are what
+  gets added up. The source that covered the most of the night is kept beside the total, so a
+  surprising figure can be traced rather than argued with.
+- 📊 **A Sleep card in Stats**: nightly average, best night, and a week-by-week chart, all in
+  hours and minutes. The average is over nights *recorded*, not nights in the window, for the
+  same reason the Steps card already works that way.
+- 📦 **Joins the single-pass Health import** alongside workouts, steps and weigh-ins.
+- Translated into all 13 UI languages.
+
+### Cardio, in the units it was measured in
+
+Cardio was already a logging mode — 29 exercises, its own two-stepper row — but it could only
+describe a treadmill, and it vanished from every summary the moment it was logged.
+
+- 🏃 **Distance instead of speed.** A cardio set now records a duration and a distance, and
+  pace falls out of the two: "46 min · 8 km · 5:45/km". Speed in km/h is what a treadmill
+  displays; the number a person writes down afterwards is the distance, and the number they
+  judge themselves on is the pace. Sets logged before this are read unchanged — their distance
+  is derived back out of the old speed and marked ≈, because it was never measured.
+- ❤️ **Heart rate per set**, in the column effort occupies for weighted work. Optional in the
+  same sense: an unrecorded pulse is not a pulse of zero. Averages are weighted by duration,
+  so a five-minute warm-up and a forty-minute run do not average out to a figure describing
+  neither, and the minutes it actually covers are shown beside it.
+- 📊 **A Cardio card in Stats** over 30d / 90d / 1Y / all time: total minutes and distance,
+  the period's pace, the longest single session, and minutes week by week. Pace is the
+  period's distance over its duration rather than an average of session paces.
+- **Cardio stops being invisible in the summaries.** Volume is weight × reps and says nothing
+  about a run, so a cardio session used to read as "0 kg" — and as "NaN kg" for anything
+  logged before the volume figure existed. Workout rows, the workout detail sheet and the
+  calendar's monthly line now show minutes and distance alongside volume, and each half is
+  left out when there is none of it.
+- 📥 **Import cardio from a watch.** An Apple Health `export.xml` now brings its workouts
+  across, not only its body weight — read by scanning rather than parsing, because the file
+  runs to hundreds of megabytes and a DOM would take the tab with it. Both shapes Health has
+  written are handled: the older one with duration and distance on the element, and the iOS 16
+  one that moved distance into a child alongside the heart rate. Miles, metres and seconds are
+  converted on the way in.
+- **Garmin and Strava activity CSVs keep their distance.** The importer already read cardio
+  rows, but collapsed the measured distance into a speed — the one figure the file was sure
+  of, thrown away. It is stored as measured now, and an average heart-rate column comes with
+  it. Activities the exercise library has no entry for become one of your own, as they do for
+  strength imports.
+- Cardio still does not join the volume figure, and should not: multiplying a duration into a
+  weight × reps total would make two incomparable things look like one number.
+- Translated into all 13 UI languages.
+
+### The app is now Dagsnav
+
+- 🧭 **Renamed from openGym**, with new icons, manifest and iOS/Android resources. The old name
+  described a gym app; this one logs a day.
+- **Food and History join the primary navigation.** Both were reachable only from somewhere
+  else, which is a fair description of how often they were reached.
+
+### The food log
+
+- 🍽 **Meals, saved meals, and the day's carbohydrate as the headline.** Carbohydrate leads
+  everywhere on the screen because it is the number anyone counting anything is counting. A
+  meal is a list of foods and grams; saving one keeps the template, and logging it writes the
+  grams actually eaten — so editing the template later cannot rewrite what last Tuesday's
+  breakfast was.
+- 🥚 **Amounts in eggs and slices, not only grams.** A Swedish dl is 100 ml, msk 15 ml, tsk
+  5 ml; those are definitions, not opinions. Millilitres become grams through a density that
+  is adjustable per food, and anything resting on an estimate is shown with a ≈, so a weighed
+  58 g never looks like a guessed one.
+- 📷 **Barcode scanning, with Open Food Facts behind it.** Livsmedelsverket has "Bröd, rågbröd,
+  mjukt" — it does not have a branded loaf, and no national food table is meant to. Decoding
+  runs in WebAssembly rather than through the browser's barcode API, which Safari does not
+  implement and which therefore does not exist on any iPhone whatever browser is installed.
+  Three ways in, because the live camera can fail: camera, a photo, or typing the digits.
+- **Which kind of number it is, is never hidden.** A laboratory value from Livsmedelsverket and
+  a volunteer's transcription of a packet are not the same thing, and the food sheet says which
+  one it is showing.
+- **The bundled food database is optional.** It is generated by `scripts/build-foods.mjs` and
+  may simply not be there; an instance that never ran the script works fine on your own foods.
+
+### Diabetes mode
+
+Off unless you turn it on, and deliberately smaller than it could be.
+
+- 🩸 **A glucose log and an insulin log, beside the food log rather than on a screen of their
+  own.** The question worth answering is what happened after a meal, and two screens is where
+  that question goes to die. Readings are stored in mmol/L whatever the profile displays,
+  because two units in one list is how a 5.5 becomes a 5.5 mg/dL.
+- 📄 **A report to take to an appointment.** Printed through the browser's own Save as PDF
+  rather than generated by a bundled library, so it comes out the same on the nurse's screen.
+  Its footnotes say that the in-range figure counts readings rather than time, that pump basal
+  is not in the insulin total, and where the carbohydrate came from — a report that hides its
+  own limits is worse than no report, because it will be believed.
+- 📥 **Import from a meter, pump or CGM export.** Built against CareLink but not specific to it:
+  columns are read off the header, so a Libre or Dexcom file is usually a few more aliases
+  rather than another importer. It commits nothing on its own — it shows what it found, what it
+  thinks each column is and which unit it believes the file is in, and says out loud where it
+  had to infer rather than read. Basal is not imported at all: CareLink reports it as a rate,
+  and turning rates into doses would invent a daily total.
+- **There is no bolus calculator, and there will not be one.** No insulin-to-carb ratio, no
+  correction factor, no insulin-on-board, no advice for a low reading. Those are dose
+  decisions, and this app cannot know about a blocked cannula, an illness, exercise two hours
+  ago, or what the care team last said.
+
+### Nutrition targets, with their sources attached
+
+- 📚 **A reference engine over Nordic Nutrition Recommendations 2023**, plus incretin and GLP-1
+  guidance from EASO/EFAD/ECPO and the ACLM/ASN/OMA/TOS advisory. Every value carries its
+  source, year, the audience it was written for, and the limitation that applies to it — a
+  population range is not a personal treatment target, and the card says so rather than
+  implying otherwise by sitting next to a target field.
+- 🛡 **Health questions decide which references apply.** Pregnancy, a prescribed protein or
+  fluid restriction, an eating disorder, malnutrition risk, hypoglycaemia-risk medication and
+  others each hide the references they would be wrong for and pause the matching targets, with
+  a plain sentence saying why. The GLP-1 layer additionally needs a treatment phase and a
+  confirmation that is re-asked every 90 days.
+- **The AI explanation cannot invent a number.** It receives interface language and verified
+  fact codes — no values, no demographics, no health data — and may only select from
+  pre-approved highlights. Where a health flag is set, no model is called at all: the server
+  writes fixed care-team notes instead. Nothing from an explanation is ever saved as a target.
+
+### Daily nutrition values you can actually follow
+
+The nutrition references landed as intervals — 1,850–2,850 kcal, 197–410 g of carbohydrate —
+because that is the shape a population reference has. Nobody can eat an interval. Everything
+below is about turning what the sources say into one number per nutrient per day, and then
+subtracting what has been logged from it.
+
+- 🎯 **One number per nutrient, per day.** Energy is a point on the PAL scale rather than its
+  full width, and carbohydrate is whatever energy is left after protein, fat and fibre — which
+  is how a day is actually put together, and what stops two percentage ranges from multiplying
+  into a span nobody can act on. A 40-year-old man of 180 cm and 90 kg aiming to lose weight now
+  gets 2,350 kcal · 263 g carbohydrate · 135 g protein · 78 g fat · 29 g fibre.
+- 📊 **The day counted down, on the Food screen.** Eaten, goal, what remains, and a bar — for
+  energy and the three macros up front, the rest under *All nutrients*. Carbohydrate leads the
+  list when diabetes mode is on. A total built from foods missing that nutrient reads as "≥ 112 g"
+  rather than pretending to be complete, because the amount left would otherwise be invented.
+- ✅ **Use these as my targets.** One tap copies the calculated day into the editable target
+  fields. Editing a field afterwards makes that field your own again. Before this the numbers
+  could only be read and retyped by hand.
+- **Three questions instead of eleven.** Only pregnancy/breastfeeding and hypoglycaemia-risk
+  medication now gate the general adult estimate; the other six narrow the references and are
+  asked where they become relevant. The GLP-1 layer still requires every one of them.
+- **Weight can be entered where it is needed.** It was the one field the nutrition sheet asked
+  for but could not accept, so supplying it meant leaving for another screen and coming back.
+- **A blocked estimate says which field is missing** — age, sex, height, weight, a weight logged
+  before units were stored — with the button that fixes it, instead of a paragraph listing
+  everything it could possibly need.
+- ⓘ **Sourcing moved behind an info button** per nutrient, showing the whole arithmetic: resting
+  energy, PAL, maintenance, the deficit applied, the daily plan. It no longer sits between the
+  reader and the figure.
+- Protein above BMI 25 counts only 40% of the excess weight, matching the adjusted-reference-weight
+  convention the EASO source already assumes.
+- **Fixed: the person this feature is for got nothing.** A woman of 160 cm and 68 kg aiming to
+  lose weight was shown maintenance energy and no macro grams at all, because the interval's low
+  end fell under the 1,200 kcal floor and the whole estimate was dropped. The floor is now applied
+  to the number rather than used to cancel it.
+- Translated into all 13 UI languages.
+
+### Swedish
+
+- 🇸🇪 **Swedish (Svenska)** joins the UI languages, bringing the count to 13. Pick it under
+  Settings → Appearance → Language. Like German and Portuguese, exercise instructions stay in
+  English — the upstream dataset doesn't cover Swedish yet — and the language chip in the
+  exercise sheet says so.
+
+### The AI coach
+
+- 🤖 **A training plan written by a model and checked by the app.** You answer a short wizard —
+  equipment above all, because a wrong answer there produces a plan you cannot perform — and
+  get a plan back as routines and a week.
+- **No API key needed.** The app writes the prompt, you carry it to the chat of your choice and
+  paste the answer back. The prompt is written to be read by a person too: someone who cannot
+  see what is being sent about them will not use the feature twice. Where the server has a key,
+  it talks to the model directly instead.
+- ✅ **Everything the model returns is validated before it is shown**, using data the app
+  already holds — the catalogue, the muscle map, the progression rules — so none of it depends
+  on the model having been careful. Errors block and go straight into a repair prompt: an
+  exercise id that does not exist, a barbell lift for someone with two dumbbells, a Thursday
+  pointing at a routine that was never written. Warnings are shown and you decide.
+- **The plan carries no weights, on purpose.** A new account has no history, so any weight a
+  model writes is a guess from age and body weight — the thing language models are worst at.
+  The first session sets the baseline instead, and the first set asks you to confirm what you
+  actually lifted.
+
+### Fixed
+
+- 🔐 **`data/` is no longer tracked by git.** It held the session-signing secret, which means
+  anyone with a clone of the repository had it. `scripts/secure-data.sh` performs the migration
+  in one command, and refuses only what would actually block rather than any dirty state.
+- **Settings shows the profile id, and lets it be copied.** Needed for support and for moving a
+  profile between instances, and previously not visible anywhere.
+- **The starter plan and the progression values are localized.** They were the last strings
+  reaching the screen in English regardless of the chosen language.
+- **A `.gitignore`, at last**, plus the `.env.example` the documentation already referenced, the
+  compose build path corrected, and the API's Docker module packaging fixed.
+
 ## v1.2.4 — 2026-08-01
 
 The effort ratings you have been recording since v1.2.3 now answer questions, and bodyweight
